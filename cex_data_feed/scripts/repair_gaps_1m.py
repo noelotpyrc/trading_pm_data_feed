@@ -54,50 +54,40 @@ def run_once(
     now_str = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
     now_ts = pd.Timestamp(now_utc).tz_convert(None).floor("min")
 
-    # 1. Check trailing gap first (cheap: db_max vs now)
     db_max = stats[1]
     trailing_start = db_max + pd.Timedelta(minutes=1)
-    if trailing_start < now_ts:
-        fetch_from = trailing_start
-        gap_type = "trailing"
-        print(f"[{now_str}] {gap_type} gap at {fetch_from}, fetching from there")
-    else:
-        # 2. Only run expensive O(n) internal gap scan if DB is current
-        gap_ts = find_first_gap(db_path)
-        if gap_ts is None:
-            print(f"[{now_str}] No gaps found — DB is up to date")
-            return 0
-        fetch_from = gap_ts
-        gap_type = "internal"
-        print(f"[{now_str}] {gap_type} gap at {fetch_from}, fetching from there")
+    has_trailing_gap = trailing_start < now_ts
 
-    df = fetch_closed_1m_since(start_ts=fetch_from, symbol=symbol)
+    # 1. Check trailing gap first (cheap: db_max vs now)
+    if has_trailing_gap:
+        print(f"[{now_str}] trailing gap: db_max={db_max}, fetching from {trailing_start}")
+        df = fetch_closed_1m_since(start_ts=trailing_start, symbol=symbol)
+        if not df.empty:
+            if dry_run:
+                print(f"[{now_str}] [DRY-RUN] Would insert {len(df)} candles")
+            else:
+                inserted = insert_candles(db_path, df)
+                print(f"[{now_str}] trailing gap filled: inserted={inserted}")
+            stats = coverage_stats(db_path)
 
-    if df.empty:
-        print(f"[{now_str}] No closed candles available to fill {gap_type} gap at {fetch_from}")
-        return 0
+    # 2. Check internal gaps (expensive O(n) scan)
+    gap_ts = find_first_gap(db_path)
+    if gap_ts is not None:
+        print(f"[{now_str}] internal gap at {gap_ts}, fetching from there")
+        df = fetch_closed_1m_since(start_ts=gap_ts, symbol=symbol)
+        if not df.empty:
+            if dry_run:
+                print(f"[{now_str}] [DRY-RUN] Would insert {len(df)} candles")
+            else:
+                inserted = insert_candles(db_path, df)
+                print(f"[{now_str}] internal gap filled: inserted={inserted}")
+            stats = coverage_stats(db_path)
 
-    if debug:
-        print(f"[DEBUG] Fetched {len(df)} closed candles: "
-              f"{df['timestamp'].min()} .. {df['timestamp'].max()}")
-
-    if dry_run:
-        print(
-            f"[{now_str}] [DRY-RUN] Would insert {len(df)} candles "
-            f"(from {df['timestamp'].min()} to {df['timestamp'].max()})"
-        )
-        return 0
-
-    inserted = insert_candles(db_path, df)
+    if not has_trailing_gap and gap_ts is None:
+        print(f"[{now_str}] No gaps found — DB is up to date")
 
     stats = coverage_stats(db_path)
-    next_gap = find_first_gap(db_path)
-
-    print(
-        f"[{now_str}] inserted={inserted}  "
-        f"db_max={stats[1]}  db_total={stats[2]:,}  "
-        f"next_gap={'none' if next_gap is None else next_gap}"
-    )
+    print(f"[{now_str}] db_max={stats[1]}  db_total={stats[2]:,}")
     return 0
 
 
