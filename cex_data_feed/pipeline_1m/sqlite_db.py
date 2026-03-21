@@ -5,7 +5,8 @@ Uses Python stdlib sqlite3 only — no extra dependencies.
 All timestamps stored as ISO-format strings (UTC, no timezone suffix).
 
 Table: ohlcv_btcusdt_1m
-  timestamp TEXT PRIMARY KEY  (e.g. "2024-01-15 12:34:00")
+  id        INTEGER PRIMARY KEY AUTOINCREMENT
+  timestamp TEXT     (e.g. "2024-01-15 12:34:00")
   open      REAL
   high      REAL
   low       REAL
@@ -16,6 +17,9 @@ Table: ohlcv_btcusdt_1m
   taker_buy_base_volume   REAL
   taker_buy_quote_volume  REAL
   ingested_at TEXT
+
+Multiple rows per timestamp are allowed (data corrections).
+Consumers should dedup by taking the latest ingested_at per timestamp.
 """
 from __future__ import annotations
 
@@ -60,7 +64,8 @@ def ensure_table(db_path: Path) -> None:
         con.execute(
             f"""
             CREATE TABLE IF NOT EXISTS {TABLE} (
-                timestamp               TEXT PRIMARY KEY,
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp               TEXT NOT NULL,
                 open                    REAL NOT NULL,
                 high                    REAL NOT NULL,
                 low                     REAL NOT NULL,
@@ -74,9 +79,8 @@ def ensure_table(db_path: Path) -> None:
             );
             """
         )
-        # Belt-and-suspenders: explicit unique index (PK already implies one)
         con.execute(
-            f"CREATE UNIQUE INDEX IF NOT EXISTS idx_{TABLE}_ts ON {TABLE}(timestamp);"
+            f"CREATE INDEX IF NOT EXISTS idx_{TABLE}_ts ON {TABLE}(timestamp);"
         )
         con.commit()
     finally:
@@ -95,14 +99,16 @@ def _ts_to_str(ts) -> str:
     return pd.Timestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def upsert_candles(db_path: Path, df: pd.DataFrame) -> int:
-    """Bulk-insert closed candles from a DataFrame; silently skips duplicates.
+def insert_candles(db_path: Path, df: pd.DataFrame) -> int:
+    """Bulk-insert closed candles from a DataFrame.
+
+    Multiple rows per timestamp are allowed (data corrections tracked via ingested_at).
 
     DataFrame must contain at least: timestamp, open, high, low, close, volume.
     Optional columns: quote_asset_volume, num_trades, taker_buy_base_volume,
                       taker_buy_quote_volume.
 
-    Returns the number of rows actually inserted (not skipped).
+    Returns the number of rows inserted.
     """
     if df.empty:
         return 0
@@ -129,10 +135,9 @@ def upsert_candles(db_path: Path, df: pd.DataFrame) -> int:
 
     con = _connect(db_path)
     try:
-        before = con.execute(f"SELECT COUNT(*) FROM {TABLE}").fetchone()[0]
         con.executemany(
             f"""
-            INSERT OR IGNORE INTO {TABLE}
+            INSERT INTO {TABLE}
               (timestamp, open, high, low, close, volume,
                quote_asset_volume, num_trades,
                taker_buy_base_volume, taker_buy_quote_volume,
@@ -142,14 +147,16 @@ def upsert_candles(db_path: Path, df: pd.DataFrame) -> int:
             rows,
         )
         con.commit()
-        after = con.execute(f"SELECT COUNT(*) FROM {TABLE}").fetchone()[0]
-        return after - before
+        return len(rows)
     finally:
         con.close()
 
 
 def read_last_n(db_path: Path, n: int) -> pd.DataFrame:
-    """Return the N most recent closed candles, sorted ascending by timestamp."""
+    """Return the N most recent closed candles, sorted ascending by timestamp.
+
+    Deduplicates by timestamp, keeping the row with the latest ingested_at.
+    """
     con = _connect(db_path)
     try:
         rows = con.execute(
@@ -158,6 +165,15 @@ def read_last_n(db_path: Path, n: int) -> pd.DataFrame:
                    quote_asset_volume, num_trades,
                    taker_buy_base_volume, taker_buy_quote_volume
             FROM {TABLE}
+            WHERE id IN (
+                SELECT id FROM (
+                    SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY timestamp ORDER BY ingested_at DESC, id DESC
+                    ) AS rn
+                    FROM {TABLE}
+                )
+                WHERE rn = 1
+            )
             ORDER BY timestamp DESC
             LIMIT ?
             """,
@@ -184,12 +200,42 @@ def read_last_n(db_path: Path, n: int) -> pd.DataFrame:
     return df
 
 
-def coverage_stats(db_path: Path) -> Optional[Tuple[pd.Timestamp, pd.Timestamp, int]]:
-    """Return (min_ts, max_ts, count) or None if the table is empty."""
+def find_first_gap(db_path: Path) -> Optional[pd.Timestamp]:
+    """Find the first missing 1-minute candle in the DB.
+
+    Returns the timestamp of the first missing minute, or None if there are
+    no gaps (data is continuous from min to max).
+    If the DB is empty, returns None.
+    """
     con = _connect(db_path)
     try:
         row = con.execute(
-            f"SELECT MIN(timestamp), MAX(timestamp), COUNT(*) FROM {TABLE}"
+            f"""
+            SELECT datetime(t.timestamp, '+1 minute') AS gap_start
+            FROM (SELECT DISTINCT timestamp FROM {TABLE}) t
+            WHERE NOT EXISTS (
+                SELECT 1 FROM {TABLE} t2
+                WHERE t2.timestamp = datetime(t.timestamp, '+1 minute')
+            )
+            AND t.timestamp < (SELECT MAX(timestamp) FROM {TABLE})
+            ORDER BY t.timestamp ASC
+            LIMIT 1
+            """
+        ).fetchone()
+    finally:
+        con.close()
+
+    if row is None:
+        return None
+    return pd.Timestamp(row[0])
+
+
+def coverage_stats(db_path: Path) -> Optional[Tuple[pd.Timestamp, pd.Timestamp, int]]:
+    """Return (min_ts, max_ts, distinct_count) or None if the table is empty."""
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            f"SELECT MIN(timestamp), MAX(timestamp), COUNT(DISTINCT timestamp) FROM {TABLE}"
         ).fetchone()
     finally:
         con.close()

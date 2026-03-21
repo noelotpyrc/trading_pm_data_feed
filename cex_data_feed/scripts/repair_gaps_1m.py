@@ -1,24 +1,17 @@
 #!/usr/bin/env python3
 """
-Phase 2: Periodic 1m BTCUSDT perp accumulator.
+Repair gaps in the 1m BTCUSDT perp SQLite database.
 
-Run-and-exit script intended to be called by cron or a systemd timer to keep
-the SQLite DB current with recently closed 1m candles from Binance FAPI.
+Scans the DB for missing 1-minute candles, fetches them from Binance FAPI,
+and inserts them. Run manually or on a less frequent schedule (e.g. daily).
 
-Each invocation:
-  1. Reads the DB's max timestamp.
-  2. Fetches all closed 1m candles from max + 1 min to now (pages if needed).
-  3. Inserts all rows into SQLite.
-  4. Prints a one-line summary and exits.
+Note: The gap scan is O(n) on the number of distinct timestamps, so avoid
+running this on every cron tick — use accumulate_1m.py for that.
 
 Usage:
-  python -m cex_data_feed.scripts.accumulate_1m \\
+  python -m cex_data_feed.scripts.repair_gaps_1m \\
     --db ~/data/btcusdt_perp_1m.sqlite \\
     [--symbol BTCUSDT] [--dry-run] [--debug]
-
-Suggested cron entry (every 2 minutes):
-  */2 * * * * cd /path/to/trading_pm_data_feed && .venv/bin/python -m cex_data_feed.scripts.accumulate_1m \\
-    --db data/btcusdt_perp_1m.sqlite >> data/accumulate_1m.log 2>&1
 """
 from __future__ import annotations
 
@@ -28,8 +21,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import pandas as pd
-
 # Allow running as a script
 if __name__ == "__main__":
     project_root = Path(__file__).resolve().parent.parent.parent
@@ -37,7 +28,7 @@ if __name__ == "__main__":
         sys.path.insert(0, str(project_root))
 
 from cex_data_feed.pipeline_1m.fetch import fetch_closed_1m_since, DEFAULT_SYMBOL
-from cex_data_feed.pipeline_1m.sqlite_db import ensure_table, insert_candles, coverage_stats
+from cex_data_feed.pipeline_1m.sqlite_db import ensure_table, insert_candles, coverage_stats, find_first_gap
 
 
 def run_once(
@@ -46,7 +37,7 @@ def run_once(
     dry_run: bool = False,
     debug: bool = False,
 ) -> int:
-    """Fetch closed 1m candles since DB max and insert into SQLite. Returns exit code."""
+    """Find gaps in the DB and fill them from Binance API. Returns exit code."""
     ensure_table(db_path)
 
     stats = coverage_stats(db_path)
@@ -54,18 +45,22 @@ def run_once(
         print("[ERROR] DB is empty — run backfill_1m first", file=sys.stderr)
         return 1
 
-    db_max = stats[1]
-    start_ts = db_max + pd.Timedelta(minutes=1)
-
     if debug:
-        print(f"[DEBUG] DB max: {db_max}  total: {stats[2]:,}  start: {start_ts}")
+        print(f"[DEBUG] DB coverage: {stats[0]} .. {stats[1]}  total: {stats[2]:,}")
 
-    df = fetch_closed_1m_since(start_ts=start_ts, symbol=symbol)
-
+    gap_ts = find_first_gap(db_path)
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
+    if gap_ts is None:
+        print(f"[{now_str}] No gaps found — DB is continuous")
+        return 0
+
+    print(f"[{now_str}] First gap at {gap_ts}, fetching from there")
+
+    df = fetch_closed_1m_since(start_ts=gap_ts, symbol=symbol)
+
     if df.empty:
-        print(f"[{now_str}] No new closed candles since {db_max}")
+        print(f"[{now_str}] No closed candles available to fill gap at {gap_ts}")
         return 0
 
     if debug:
@@ -75,37 +70,35 @@ def run_once(
     if dry_run:
         print(
             f"[{now_str}] [DRY-RUN] Would insert {len(df)} candles "
-            f"(newest: {df['timestamp'].max()})"
+            f"(from {df['timestamp'].min()} to {df['timestamp'].max()})"
         )
         return 0
 
     inserted = insert_candles(db_path, df)
 
     stats = coverage_stats(db_path)
-    db_max = stats[1] if stats else "n/a"
-    db_total = stats[2] if stats else "?"
+    next_gap = find_first_gap(db_path)
 
     print(
-        f"[{now_str}] fetched={len(df)}  inserted={inserted}  "
-        f"db_max={db_max}  db_total={db_total:,}"
-        if stats else
-        f"[{now_str}] fetched={len(df)}  inserted={inserted}"
+        f"[{now_str}] inserted={inserted}  "
+        f"db_max={stats[1]}  db_total={stats[2]:,}  "
+        f"next_gap={'none' if next_gap is None else next_gap}"
     )
     return 0
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Periodic 1m BTCUSDT perp accumulator (Phase 2)",
+        description="Repair gaps in the 1m BTCUSDT perp SQLite database",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
     p.add_argument("--db", type=Path, required=True,
-                   help="Path to SQLite file (created if absent)")
+                   help="Path to SQLite file")
     p.add_argument("--symbol", default=DEFAULT_SYMBOL,
                    help=f"Binance symbol (default: {DEFAULT_SYMBOL})")
     p.add_argument("--dry-run", action="store_true",
-                   help="Fetch but do not write to DB")
+                   help="Detect gaps but do not write to DB")
     p.add_argument("--debug", action="store_true",
                    help="Verbose output")
     return p.parse_args(argv)

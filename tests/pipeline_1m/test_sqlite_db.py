@@ -7,7 +7,7 @@ import pytest
 
 from cex_data_feed.pipeline_1m.sqlite_db import (
     ensure_table,
-    upsert_candles,
+    insert_candles,
     read_last_n,
     coverage_stats,
 )
@@ -47,32 +47,25 @@ class TestEnsureTable:
         ensure_table(db_path)  # should not raise
 
 
-class TestUpsertCandles:
+class TestInsertCandles:
     def test_insert_rows(self, db_path):
         ensure_table(db_path)
         df = _make_df(["2024-01-01 00:00:00", "2024-01-01 00:01:00"])
-        inserted = upsert_candles(db_path, df)
+        inserted = insert_candles(db_path, df)
         assert inserted == 2
 
-    def test_duplicate_ignored(self, db_path):
+    def test_duplicate_timestamps_allowed(self, db_path):
+        """Multiple inserts of the same timestamp should all succeed."""
         ensure_table(db_path)
         df = _make_df(["2024-01-01 00:00:00", "2024-01-01 00:01:00"])
-        upsert_candles(db_path, df)
-        inserted = upsert_candles(db_path, df)
-        assert inserted == 0
+        insert_candles(db_path, df)
+        inserted = insert_candles(db_path, df)
+        assert inserted == 2  # duplicates are allowed now
 
     def test_empty_df(self, db_path):
         ensure_table(db_path)
         df = pd.DataFrame()
-        assert upsert_candles(db_path, df) == 0
-
-    def test_partial_overlap(self, db_path):
-        ensure_table(db_path)
-        df1 = _make_df(["2024-01-01 00:00:00", "2024-01-01 00:01:00"])
-        df2 = _make_df(["2024-01-01 00:01:00", "2024-01-01 00:02:00"])
-        upsert_candles(db_path, df1)
-        inserted = upsert_candles(db_path, df2)
-        assert inserted == 1  # only 00:02 is new
+        assert insert_candles(db_path, df) == 0
 
 
 class TestReadLastN:
@@ -83,7 +76,7 @@ class TestReadLastN:
             "2024-01-01 00:01:00",
             "2024-01-01 00:02:00",
         ])
-        upsert_candles(db_path, df)
+        insert_candles(db_path, df)
         result = read_last_n(db_path, 2)
         assert len(result) == 2
 
@@ -94,9 +87,21 @@ class TestReadLastN:
             "2024-01-01 00:01:00",
             "2024-01-01 00:02:00",
         ])
-        upsert_candles(db_path, df)
+        insert_candles(db_path, df)
         result = read_last_n(db_path, 2)
         assert result["timestamp"].iloc[0] < result["timestamp"].iloc[1]
+
+    def test_dedup_takes_latest_ingested(self, db_path):
+        """When multiple rows share a timestamp, read_last_n returns the latest ingested."""
+        ensure_table(db_path)
+        df1 = _make_df(["2024-01-01 00:00:00"], base_price=100.0)
+        insert_candles(db_path, df1)
+        # Insert a "corrected" version with different price
+        df2 = _make_df(["2024-01-01 00:00:00"], base_price=200.0)
+        insert_candles(db_path, df2)
+        result = read_last_n(db_path, 1)
+        assert len(result) == 1
+        assert result["open"].iloc[0] == 200.0
 
     def test_empty_db(self, db_path):
         ensure_table(db_path)
@@ -116,8 +121,17 @@ class TestCoverageStats:
             "2024-01-01 00:01:00",
             "2024-01-01 00:02:00",
         ])
-        upsert_candles(db_path, df)
+        insert_candles(db_path, df)
         min_ts, max_ts, count = coverage_stats(db_path)
         assert count == 3
         assert min_ts == pd.Timestamp("2024-01-01 00:00:00")
         assert max_ts == pd.Timestamp("2024-01-01 00:02:00")
+
+    def test_distinct_count_with_duplicates(self, db_path):
+        """coverage_stats should return distinct timestamp count."""
+        ensure_table(db_path)
+        df = _make_df(["2024-01-01 00:00:00", "2024-01-01 00:01:00"])
+        insert_candles(db_path, df)
+        insert_candles(db_path, df)  # duplicate insert
+        _, _, count = coverage_stats(db_path)
+        assert count == 2  # distinct timestamps, not 4 total rows

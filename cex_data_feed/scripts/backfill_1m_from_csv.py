@@ -49,7 +49,7 @@ if __name__ == "__main__":
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-from cex_data_feed.pipeline_1m.sqlite_db import ensure_table, upsert_candles, coverage_stats
+from cex_data_feed.pipeline_1m.sqlite_db import ensure_table, insert_candles, coverage_stats
 
 
 # Binance kline CSV column names (from merge_binance_klines.py)
@@ -81,7 +81,7 @@ def _detect_has_header(csv_path: Path) -> bool:
 
 
 def _read_chunk(chunk: pd.DataFrame) -> pd.DataFrame:
-    """Normalise a raw Binance kline chunk into the format expected by upsert_candles."""
+    """Normalise a raw Binance kline chunk into the format expected by insert_candles."""
     # If the chunk came from a headerless CSV we assign column names
     if "open_time" not in chunk.columns:
         if len(chunk.columns) >= 12:
@@ -132,7 +132,6 @@ def run_backfill(
         print("[INFO] DB is empty — bootstrapping")
 
     total_inserted = 0
-    total_skipped = 0
     chunk_num = 0
 
     reader = pd.read_csv(
@@ -153,22 +152,19 @@ def run_backfill(
 
         if dry_run:
             if debug:
-                print(f"[DRY-RUN] Would upsert chunk {chunk_num} ({len(df)} rows)")
+                print(f"[DRY-RUN] Would insert chunk {chunk_num} ({len(df)} rows)")
             total_inserted += len(df)
-            total_skipped += 0
             continue
 
-        inserted = upsert_candles(db_path, df)
-        skipped = len(df) - inserted
+        inserted = insert_candles(db_path, df)
         total_inserted += inserted
-        total_skipped += skipped
 
         if debug:
             ts_min = df["timestamp"].min()
             ts_max = df["timestamp"].max()
             print(
                 f"[DEBUG] Chunk {chunk_num}: rows={len(df)}  inserted={inserted}  "
-                f"skipped={skipped}  range=[{ts_min} .. {ts_max}]"
+                f"range=[{ts_min} .. {ts_max}]"
             )
         elif chunk_num % 20 == 0:
             print(f"[INFO] Processed chunk {chunk_num}  total_inserted={total_inserted:,}")
@@ -182,8 +178,7 @@ def run_backfill(
                 f"[INFO] DB after:  min={after[0]}  max={after[1]}  rows={after[2]:,}"
             )
         print(
-            f"[INFO] Done. chunks={chunk_num}  inserted={total_inserted:,}  "
-            f"skipped(dup)={total_skipped:,}"
+            f"[INFO] Done. chunks={chunk_num}  inserted={total_inserted:,}"
         )
 
     return 0

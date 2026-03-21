@@ -27,17 +27,33 @@ class Kline:
     taker_buy_quote_volume: str | None = None
 
 
-def _build_klines_url(symbol: str, interval: str, limit: int) -> str:
-    qs = urlencode({"symbol": symbol, "interval": interval, "limit": limit})
+def _build_klines_url(
+    symbol: str,
+    interval: str,
+    limit: int | None = None,
+    start_time_ms: int | None = None,
+) -> str:
+    params: dict = {"symbol": symbol, "interval": interval}
+    if limit is not None:
+        params["limit"] = limit
+    if start_time_ms is not None:
+        params["startTime"] = start_time_ms
+    qs = urlencode(params)
     return f"{BINANCE_FAPI}/fapi/v1/klines?{qs}"
 
 
-def fetch_klines(symbol: str, interval: str, limit: int) -> List[Kline]:
-    """Fetch recent klines from Binance Futures API.
+def fetch_klines(
+    symbol: str,
+    interval: str,
+    limit: int | None = None,
+    start_time_ms: int | None = None,
+) -> List[Kline]:
+    """Fetch klines from Binance Futures API.
 
+    If start_time_ms is provided, fetches candles starting from that time.
     Returns a list of Kline with string price/volume fields as returned by the API.
     """
-    url = _build_klines_url(symbol, interval, limit)
+    url = _build_klines_url(symbol, interval, limit, start_time_ms)
     req = Request(url, headers={"User-Agent": "ohlcv-feed/1.0"})
     with urlopen(req, timeout=15) as resp:
         payload = json.loads(resp.read())
