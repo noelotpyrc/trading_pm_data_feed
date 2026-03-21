@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
+
 # Allow running as a script
 if __name__ == "__main__":
     project_root = Path(__file__).resolve().parent.parent.parent
@@ -48,19 +50,31 @@ def run_once(
     if debug:
         print(f"[DEBUG] DB coverage: {stats[0]} .. {stats[1]}  total: {stats[2]:,}")
 
-    gap_ts = find_first_gap(db_path)
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    now_utc = datetime.now(timezone.utc)
+    now_str = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+    now_ts = pd.Timestamp(now_utc).tz_convert(None).floor("min")
 
-    if gap_ts is None:
-        print(f"[{now_str}] No gaps found — DB is continuous")
+    # Check for internal gaps (missing minutes between min and max)
+    gap_ts = find_first_gap(db_path)
+
+    # Check for trailing gap (db_max is behind current time)
+    db_max = stats[1]
+    trailing_start = db_max + pd.Timedelta(minutes=1)
+    has_trailing_gap = trailing_start < now_ts
+
+    if gap_ts is None and not has_trailing_gap:
+        print(f"[{now_str}] No gaps found — DB is up to date")
         return 0
 
-    print(f"[{now_str}] First gap at {gap_ts}, fetching from there")
+    # Prefer internal gap; fall back to trailing gap
+    fetch_from = gap_ts if gap_ts is not None else trailing_start
+    gap_type = "internal" if gap_ts is not None else "trailing"
+    print(f"[{now_str}] {gap_type} gap at {fetch_from}, fetching from there")
 
-    df = fetch_closed_1m_since(start_ts=gap_ts, symbol=symbol)
+    df = fetch_closed_1m_since(start_ts=fetch_from, symbol=symbol)
 
     if df.empty:
-        print(f"[{now_str}] No closed candles available to fill gap at {gap_ts}")
+        print(f"[{now_str}] No closed candles available to fill {gap_type} gap at {fetch_from}")
         return 0
 
     if debug:
