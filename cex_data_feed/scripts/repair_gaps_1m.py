@@ -54,22 +54,22 @@ def run_once(
     now_str = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
     now_ts = pd.Timestamp(now_utc).tz_convert(None).floor("min")
 
-    # Check for internal gaps (missing minutes between min and max)
-    gap_ts = find_first_gap(db_path)
-
-    # Check for trailing gap (db_max is behind current time)
+    # 1. Check trailing gap first (cheap: db_max vs now)
     db_max = stats[1]
     trailing_start = db_max + pd.Timedelta(minutes=1)
-    has_trailing_gap = trailing_start < now_ts
-
-    if gap_ts is None and not has_trailing_gap:
-        print(f"[{now_str}] No gaps found — DB is up to date")
-        return 0
-
-    # Prefer internal gap; fall back to trailing gap
-    fetch_from = gap_ts if gap_ts is not None else trailing_start
-    gap_type = "internal" if gap_ts is not None else "trailing"
-    print(f"[{now_str}] {gap_type} gap at {fetch_from}, fetching from there")
+    if trailing_start < now_ts:
+        fetch_from = trailing_start
+        gap_type = "trailing"
+        print(f"[{now_str}] {gap_type} gap at {fetch_from}, fetching from there")
+    else:
+        # 2. Only run expensive O(n) internal gap scan if DB is current
+        gap_ts = find_first_gap(db_path)
+        if gap_ts is None:
+            print(f"[{now_str}] No gaps found — DB is up to date")
+            return 0
+        fetch_from = gap_ts
+        gap_type = "internal"
+        print(f"[{now_str}] {gap_type} gap at {fetch_from}, fetching from there")
 
     df = fetch_closed_1m_since(start_ts=fetch_from, symbol=symbol)
 
