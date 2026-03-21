@@ -2,33 +2,28 @@
 from __future__ import annotations
 
 import argparse
-import sqlite3
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from live.private_strategies.vol_signal_artifacts import (
+from pm_btc15updown_artifact.vol_signal_artifacts import (
     VolSignalBuildConfig,
     attach_signal_columns,
     prepare_feature_frame,
     score_date_range_for_history,
 )
+from pm_btc15updown_artifact.data_loader import load_ohlcv_window, load_csv_window
 
 
-DEFAULT_RAW_CSV = Path(
-    "/Volumes/Extreme SSD/trading_data/cex/ohlvc/binance_btcusdt_perp_1m/BTCUSDT-1m-merged.csv"
-)
-DEFAULT_TRUTH_CSV = Path(
-    "/Volumes/Extreme SSD/trading_data/cex/ohlvc/binance_btcusdt_perp_1m/BTCUSDT-1m-features-vol.csv"
-)
-DEFAULT_FEATURE_DAY = "2022-01-01"
-DEFAULT_PREDICTION_DAY = "2025-01-16"
+DEFAULT_SQLITE_DB = Path("data/btcusdt_perp_1m.sqlite")
+DEFAULT_FEATURE_DAY = "2025-07-01"
+DEFAULT_PREDICTION_DAY = "2025-08-01"
 DEFAULT_TOLERANCE = 1e-10
 
 
@@ -71,70 +66,31 @@ class CompareResult:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Parity check for private vol-signal artifact builder.")
-    parser.add_argument("--raw-csv", type=Path, default=DEFAULT_RAW_CSV)
-    parser.add_argument("--sqlite-db", type=Path, default=None)
-    parser.add_argument("--sqlite-table", default="ohlcv_btcusdt_1m")
-    parser.add_argument("--truth-csv", type=Path, default=DEFAULT_TRUTH_CSV)
+    parser = argparse.ArgumentParser(description="Parity check for vol-signal artifact builder.")
+    parser.add_argument("--raw-csv", type=Path, default=None,
+                        help="Path to raw OHLCV CSV (alternative to --sqlite-db)")
+    parser.add_argument("--sqlite-db", type=Path, default=DEFAULT_SQLITE_DB,
+                        help=f"Path to SQLite DB (default: {DEFAULT_SQLITE_DB})")
+    parser.add_argument("--truth-csv", type=Path, required=True,
+                        help="Path to truth CSV for comparison")
     parser.add_argument("--feature-day", default=DEFAULT_FEATURE_DAY)
     parser.add_argument("--prediction-day", default=DEFAULT_PREDICTION_DAY)
     parser.add_argument("--tolerance", type=float, default=DEFAULT_TOLERANCE)
     return parser.parse_args()
 
 
-def load_window(
-    path: Path,
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-    *,
-    usecols: list[str] | None = None,
-    chunksize: int = 250_000,
-) -> pd.DataFrame:
-    frames: list[pd.DataFrame] = []
-    for chunk in pd.read_csv(path, usecols=usecols, chunksize=chunksize):
-        chunk["datetime_utc"] = pd.to_datetime(chunk["datetime_utc"])
-        window = chunk[(chunk["datetime_utc"] >= start) & (chunk["datetime_utc"] < end)]
-        if not window.empty:
-            frames.append(window)
-    if not frames:
-        return pd.DataFrame(columns=usecols or [])
-    return pd.concat(frames, ignore_index=True)
-
-
-def load_sqlite_window(
-    db_path: Path,
-    table_name: str,
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-) -> pd.DataFrame:
-    con = sqlite3.connect(str(db_path))
-    try:
-        return pd.read_sql_query(
-            (
-                f"SELECT timestamp as datetime_utc, open, high, low, close, volume "
-                f"FROM {table_name} WHERE timestamp >= ? AND timestamp < ? ORDER BY timestamp"
-            ),
-            con,
-            params=[start.isoformat(sep=" "), end.isoformat(sep=" ")],
-            parse_dates=["datetime_utc"],
-        )
-    finally:
-        con.close()
-
-
 def load_raw_window(
     *,
     raw_csv: Path | None,
     sqlite_db: Path | None,
-    sqlite_table: str,
     start: pd.Timestamp,
     end: pd.Timestamp,
 ) -> pd.DataFrame:
     if sqlite_db is not None:
-        return load_sqlite_window(sqlite_db, sqlite_table, start, end)
+        return load_ohlcv_window(sqlite_db, start, end)
     if raw_csv is None:
         raise ValueError("either raw_csv or sqlite_db must be provided")
-    return load_window(
+    return load_csv_window(
         raw_csv,
         start=start,
         end=end,
@@ -178,7 +134,6 @@ def compare_frames(
 def run_feature_day_check(
     raw_csv: Path | None,
     sqlite_db: Path | None,
-    sqlite_table: str,
     truth_csv: Path,
     feature_day: pd.Timestamp,
     *,
@@ -190,11 +145,10 @@ def run_feature_day_check(
     raw = load_raw_window(
         raw_csv=raw_csv,
         sqlite_db=sqlite_db,
-        sqlite_table=sqlite_table,
         start=raw_start,
         end=raw_end,
     )
-    truth = load_window(
+    truth = load_csv_window(
         truth_csv,
         start=feature_day,
         end=feature_day + pd.Timedelta(days=1),
@@ -216,7 +170,6 @@ def run_feature_day_check(
 def run_prediction_day_check(
     raw_csv: Path | None,
     sqlite_db: Path | None,
-    sqlite_table: str,
     truth_csv: Path,
     prediction_day: pd.Timestamp,
     *,
@@ -228,11 +181,10 @@ def run_prediction_day_check(
     raw = load_raw_window(
         raw_csv=raw_csv,
         sqlite_db=sqlite_db,
-        sqlite_table=sqlite_table,
         start=raw_start,
         end=raw_end,
     )
-    truth = load_window(
+    truth = load_csv_window(
         truth_csv,
         start=prediction_day,
         end=prediction_day + pd.Timedelta(days=1),
@@ -268,10 +220,12 @@ def main() -> int:
     feature_day = pd.Timestamp(args.feature_day).normalize()
     prediction_day = pd.Timestamp(args.prediction_day).normalize()
 
+    raw_csv = args.raw_csv if args.sqlite_db is None else None
+    sqlite_db = args.sqlite_db if args.raw_csv is None else None
+
     feature_result = run_feature_day_check(
-        args.raw_csv if args.sqlite_db is None else None,
-        args.sqlite_db,
-        args.sqlite_table,
+        raw_csv,
+        sqlite_db,
         args.truth_csv,
         feature_day,
         config=config,
@@ -280,9 +234,8 @@ def main() -> int:
     print_result(f"feature_day {feature_day.date()}", feature_result)
 
     prediction_result = run_prediction_day_check(
-        args.raw_csv if args.sqlite_db is None else None,
-        args.sqlite_db,
-        args.sqlite_table,
+        raw_csv,
+        sqlite_db,
         args.truth_csv,
         prediction_day,
         config=config,
