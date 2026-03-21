@@ -87,16 +87,19 @@ Options:
 
 ## Repair Gaps
 
-Scans the entire DB for missing 1-minute candles, fetches them from Binance, and inserts them. Use this to fix gaps caused by API outages or other issues.
+Detects and fills gaps in the DB. Checks two things in order:
+
+1. **Trailing gap** (O(1)) — is `db_max` behind current time? If so, fetches from `db_max + 1 min` to now.
+2. **Internal gaps** (O(n)) — scans all distinct timestamps for missing minutes between min and max. If found, fetches from the first gap forward.
+
+Both checks run in a single invocation. Duplicates for existing data are expected and harmless.
 
 ```bash
 .venv/bin/python -m cex_data_feed.scripts.repair_gaps_1m \
   --db data/btcusdt_perp_1m.sqlite
 ```
 
-- O(n) gap scan — walks all distinct timestamps to find the first missing minute
-- Fetches from the first gap to now and inserts (duplicates for existing data are expected)
-- Run manually or on a less frequent schedule (e.g. daily)
+Run manually or on a less frequent schedule (e.g. daily).
 
 Options:
 - `--symbol` — Binance symbol (default: BTCUSDT)
