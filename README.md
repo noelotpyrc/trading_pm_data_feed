@@ -68,3 +68,15 @@ python -m venv .venv
 ```bash
 .venv/bin/python -m pytest tests/ -v
 ```
+
+## Parity Check
+
+Verifies the migrated artifact builder produces identical results to the original:
+
+```bash
+/Users/noel/projects/venvs/production/bin/python -m pm_btc15updown_artifact.check_vol_signal_artifact_parity \
+  --sqlite-db data/btcusdt_perp_1m.sqlite \
+  --truth-csv "/Volumes/Extreme SSD/trading_data/cex/ohlvc/binance_btcusdt_perp_1m/BTCUSDT-1m-features-vol.csv"
+```
+
+Last verified: 2026-03-21 — all 37 columns match within ~1e-15 tolerance.

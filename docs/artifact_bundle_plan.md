@@ -67,21 +67,51 @@ Runs on VPS once per day before the trading node starts.
 - **`pm_btc15updown_artifact`** uses `datetime_utc` internally (historical convention from the signal spec)
 - Mapping happens at the read boundary — the build script aliases `timestamp` → `datetime_utc` when loading from SQLite
 
+## Data Quality in Metadata
+
+The build script records source data quality stats in `metadata.json`, so consumers can decide whether to use the artifact or fall back to an older one:
+
+```json
+"training_data_quality": {
+    "expected_candles": 10080,
+    "actual_candles": 10080,
+    "missing_candles": 0,
+    "missing_pct": 0.0,
+    "largest_gap_minutes": 0,
+    "largest_gap_at": null
+},
+"zpool_data_quality": {
+    "expected_candles": 10065,
+    "actual_candles": 10065,
+    "missing_candles": 0,
+    "missing_pct": 0.0,
+    "largest_gap_minutes": 0,
+    "largest_gap_at": null
+}
+```
+
+The build is **permissive** — it does not reject artifacts due to gaps. It records the issue and defers to the consumer to decide whether the model is usable.
+
 ## Parity Checker
 
 `pm_btc15updown_artifact/check_vol_signal_artifact_parity.py`
 
-Used for **local development testing only**. Compares the artifact builder's output against a known-good truth CSV to verify correctness.
+Used for **local development testing only**. Compares the artifact builder's computed features and predictions against a known-good truth CSV to verify the migrated code produces identical results.
 
 ```bash
-.venv/bin/python -m pm_btc15updown_artifact.check_vol_signal_artifact_parity \
+# Using local SQLite DB (default: data/btcusdt_perp_1m.sqlite)
+/Users/noel/projects/venvs/production/bin/python -m pm_btc15updown_artifact.check_vol_signal_artifact_parity \
   --sqlite-db data/btcusdt_perp_1m.sqlite \
-  --truth-csv /path/to/truth.csv \
-  --feature-day 2022-01-01 \
-  --prediction-day 2025-01-16
+  --truth-csv "/Volumes/Extreme SSD/trading_data/cex/ohlvc/binance_btcusdt_perp_1m/BTCUSDT-1m-features-vol.csv"
 ```
 
-Requires a local SQLite DB (or raw CSV) and a truth CSV for comparison.
+Defaults: `--feature-day 2025-07-01`, `--prediction-day 2025-08-01`, `--tolerance 1e-10`.
+
+Checks two things:
+1. **Feature day** — OHLCV, parkinson volatilities, ratios, forward returns, MAR targets (30 columns)
+2. **Prediction day** — pred_mar_1/3/5, mar_blend, strike_K, ttl, sigma_W_ttl (7 columns)
+
+All columns should match within floating-point tolerance (~1e-15). Requires local SQLite DB with data from 2025-06 onwards and the truth CSV on the external SSD.
 
 ## Consumer Pull (not in this project)
 
@@ -113,7 +143,7 @@ crontab -e
 
 Replace `/root/trading_pm_data_feed` with the actual project path on VPS (`pwd`).
 
-## Open Questions
+## Verified
 
-- Retention policy for old artifacts? (Keep last N days, or archive?)
-- Should we also produce a SQLite snapshot via `.backup()` for consumer debugging, or is the artifact sufficient?
+- Parity check passed (2026-03-21): all 37 columns match truth within ~1e-15 tolerance
+- Build tested against local dev DB with data from 2025-06 to 2026-03-21
