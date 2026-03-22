@@ -76,33 +76,41 @@ def check_data_quality(
     expected_start: pd.Timestamp,
     expected_end: pd.Timestamp,
     label: str = "",
-) -> None:
-    """Log warnings about missing data in the OHLCV window.
+) -> dict:
+    """Check data quality and return stats dict.
 
-    Checks for:
-    - Missing candles vs expected count
-    - Largest contiguous gap
+    Returns dict with keys:
+      expected_candles, actual_candles, missing_candles, missing_pct,
+      largest_gap_minutes, largest_gap_at
     """
+    expected_minutes = int((expected_end - expected_start).total_seconds() / 60)
+    stats: dict = {
+        "expected_candles": expected_minutes,
+        "actual_candles": len(df),
+        "missing_candles": expected_minutes - len(df),
+        "missing_pct": round((expected_minutes - len(df)) / expected_minutes * 100, 2) if expected_minutes > 0 else 0.0,
+        "largest_gap_minutes": 0,
+        "largest_gap_at": None,
+    }
+
     if df.empty:
         print(f"[WARN]{' ' + label + ':' if label else ''} no data in window "
               f"{expected_start} .. {expected_end}")
-        return
+        return stats
 
-    expected_minutes = int((expected_end - expected_start).total_seconds() / 60)
-    actual_minutes = len(df)
-    missing = expected_minutes - actual_minutes
-
-    if missing > 0:
-        pct = missing / expected_minutes * 100
+    if stats["missing_candles"] > 0:
         print(f"[WARN]{' ' + label + ':' if label else ''} "
-              f"missing {missing} of {expected_minutes} expected 1m candles ({pct:.1f}%)")
+              f"missing {stats['missing_candles']} of {expected_minutes} expected 1m candles ({stats['missing_pct']}%)")
 
-    # Find largest contiguous gap
     if len(df) >= 2:
         diffs = df["datetime_utc"].diff().dt.total_seconds() / 60
         max_gap_minutes = diffs.max()
         if max_gap_minutes > 1:
             gap_idx = diffs.idxmax()
             gap_at = df["datetime_utc"].iloc[gap_idx - 1] if gap_idx > 0 else df["datetime_utc"].iloc[0]
+            stats["largest_gap_minutes"] = int(max_gap_minutes)
+            stats["largest_gap_at"] = str(gap_at)
             print(f"[WARN]{' ' + label + ':' if label else ''} "
                   f"largest gap: {int(max_gap_minutes)} minutes at {gap_at}")
+
+    return stats

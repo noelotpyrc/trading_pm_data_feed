@@ -43,8 +43,12 @@ def _load_and_check(
     score_date: pd.Timestamp,
     config: VolSignalBuildConfig,
     debug: bool = False,
-) -> pd.DataFrame:
-    """Load OHLCV window needed for artifact build, with data quality checks."""
+) -> tuple[pd.DataFrame, dict]:
+    """Load OHLCV window needed for artifact build, with data quality checks.
+
+    Returns (dataframe, data_quality_stats) where data_quality_stats contains
+    training and z-pool window quality metrics for metadata.json.
+    """
     history_start = score_date - timedelta(days=config.min_required_history_days)
     data_end = score_date + timedelta(days=1)
 
@@ -65,7 +69,7 @@ def _load_and_check(
 
     # Check training window quality
     train_start = score_date - timedelta(days=config.training_lookback_days)
-    check_data_quality(
+    train_quality = check_data_quality(
         df[(df["datetime_utc"] >= train_start) & (df["datetime_utc"] < score_date)],
         expected_start=train_start,
         expected_end=score_date,
@@ -75,14 +79,19 @@ def _load_and_check(
     # Check z-pool window quality
     zpool_start = score_date - timedelta(days=config.z_pool_lookback_days)
     zpool_end = score_date - timedelta(minutes=config.group_minutes)
-    check_data_quality(
+    zpool_quality = check_data_quality(
         df[(df["datetime_utc"] >= zpool_start) & (df["datetime_utc"] < zpool_end)],
         expected_start=zpool_start,
         expected_end=zpool_end,
         label="z-pool window",
     )
 
-    return df
+    quality_stats = {
+        "training_data_quality": train_quality,
+        "zpool_data_quality": zpool_quality,
+    }
+
+    return df, quality_stats
 
 
 def build_once(
@@ -93,9 +102,9 @@ def build_once(
     debug: bool = False,
 ) -> Path:
     """Build and save a single day's artifact. Returns the output directory."""
-    ohlcv_df = _load_and_check(db_path, score_date, config, debug=debug)
+    ohlcv_df, quality_stats = _load_and_check(db_path, score_date, config, debug=debug)
 
-    artifact = build_daily_signal_artifact(ohlcv_df, score_date, config)
+    artifact = build_daily_signal_artifact(ohlcv_df, score_date, config, extra_metadata=quality_stats)
 
     artifact_dir = out_dir / score_date.strftime("%Y-%m-%d")
     artifact.save(artifact_dir)

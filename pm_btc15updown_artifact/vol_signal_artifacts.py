@@ -374,6 +374,7 @@ def build_daily_signal_artifact(
     ohlcv_df: pd.DataFrame,
     score_date: str | pd.Timestamp,
     config: VolSignalBuildConfig | None = None,
+    extra_metadata: dict | None = None,
 ) -> DailySignalArtifact:
     config = config or VolSignalBuildConfig()
     score_date_ts = normalize_score_date(score_date)
@@ -409,6 +410,8 @@ def build_daily_signal_artifact(
         "min_required_history_days": config.min_required_history_days,
         "artifact_version": 1,
     }
+    if extra_metadata:
+        metadata.update(extra_metadata)
 
     return DailySignalArtifact(
         score_date=score_date_ts.date().isoformat(),
