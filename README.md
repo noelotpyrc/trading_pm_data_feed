@@ -32,7 +32,7 @@ See [docs/pipeline_1m.md](docs/pipeline_1m.md) for details.
 
 Builds daily signal artifacts from the 1m OHLCV SQLite DB. Runs once per day on VPS before trading starts. Produces model coefficients + empirical z-pool for computing P(close > K) on 15-minute epochs.
 
-See [docs/artifact_bundle_plan.md](docs/artifact_bundle_plan.md) for details.
+See [docs/artifact_pipeline.md](docs/artifact_pipeline.md) for details.
 
 ```bash
 # Build today's artifact
