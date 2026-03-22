@@ -55,5 +55,5 @@ The trading repo should not become the primary owner of raw-source replication o
 ## Notes for Future Implementation
 
 - Local code should treat missing artifact bundle as a hard startup problem unless an explicit fallback path is designed
-- If a fallback is ever added, it should rebuild from a pulled local SQLite copy, not query the VPS SQLite file directly
+- Artifact sync layer and fallback policy are TBD — to be designed as part of a future preflight/sync component
 - The trading repo does not need to own VPS maintenance concerns like cron, retention, or log rotation
