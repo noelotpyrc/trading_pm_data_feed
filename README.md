@@ -51,6 +51,7 @@ pm_btc15updown_artifact/    # Pipeline 2: signal artifact builder
   vol_signal_artifacts.py   #   Core artifact build logic
   vol_signal_spec.md        #   Signal generation specification
   scripts/                  #   CLI entry points (build_daily_artifact)
+utils/                      # VPS + local management utilities
 tests/
 docs/
 data/                       # SQLite databases + artifacts (gitignored)
@@ -61,6 +62,18 @@ data/                       # SQLite databases + artifacts (gitignored)
 ```bash
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt
+```
+
+## VPS Management
+
+See [utils/README.md](utils/README.md) for local ↔ VPS management commands.
+
+```bash
+# From local machine
+python -m utils.local db-stats           # Check VPS DB status
+python -m utils.local tail-log accumulate_1m  # Tail VPS logs
+python -m utils.local pull-artifact      # Pull today's artifact
+python -m utils.local list-artifacts     # List available dates
 ```
 
 ## Tests

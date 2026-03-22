@@ -137,8 +137,8 @@ crontab -e
 ```
 
 ```
-# Build daily artifact at 00:05 UTC (before trading day)
-5 0 * * * cd /root/trading_pm_data_feed && .venv/bin/python -m pm_btc15updown_artifact.scripts.build_daily_artifact --db data/btcusdt_perp_1m.sqlite --out-dir data/artifacts --retry 3 >> data/build_artifact.log 2>&1
+# Build daily artifact at 00:01 UTC (before trading day)
+1 0 * * * cd /root/trading_pm_data_feed && .venv/bin/python -m pm_btc15updown_artifact.scripts.build_daily_artifact --db data/btcusdt_perp_1m.sqlite --out-dir data/artifacts --retry 3 >> data/build_artifact.log 2>&1
 ```
 
 Replace `/root/trading_pm_data_feed` with the actual project path on VPS (`pwd`).

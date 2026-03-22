@@ -12,7 +12,7 @@ The database serves as **historical warmup data** for downstream consumer applic
 Phase 1 — Backfill (one-time):
   Binance Vision ZIPs → merge → CSV → SQLite
 
-Phase 2 — Accumulate (cron, every 2 min):
+Phase 2 — Accumulate (cron, every 5 min):
   DB max + 1 min → Binance FAPI → SQLite insert
 
 Repair (manual/daily):
@@ -78,7 +78,7 @@ Lightweight run-and-exit script. Reads `max(timestamp)` from the DB, fetches all
 
 - O(1) DB lookup — just reads `max(timestamp)`
 - Pages through Binance API in batches of 1500 if the gap is large (e.g. after downtime)
-- Designed to run frequently on cron (every 2 minutes)
+- Designed to run frequently on cron (every 5 minutes)
 
 Options:
 - `--symbol` — Binance symbol (default: BTCUSDT)
@@ -122,11 +122,11 @@ crontab -e
 ```
 
 ```
-# Accumulate new candles every 2 minutes
-*/2 * * * * cd /root/trading_pm_data_feed && .venv/bin/python -m cex_data_feed.scripts.accumulate_1m --db data/btcusdt_perp_1m.sqlite >> data/accumulate_1m.log 2>&1
+# Accumulate new candles every 5 minutes
+*/5 * * * * cd /root/trading_pm_data_feed && .venv/bin/python -m cex_data_feed.scripts.accumulate_1m --db data/btcusdt_perp_1m.sqlite >> data/accumulate_1m.log 2>&1
 
-# Repair gaps once a day at 04:00 UTC
-0 4 * * * cd /root/trading_pm_data_feed && .venv/bin/python -m cex_data_feed.scripts.repair_gaps_1m --db data/btcusdt_perp_1m.sqlite >> data/repair_gaps_1m.log 2>&1
+# Repair gaps once a day at midnight UTC
+0 0 * * * cd /root/trading_pm_data_feed && .venv/bin/python -m cex_data_feed.scripts.repair_gaps_1m --db data/btcusdt_perp_1m.sqlite >> data/repair_gaps_1m.log 2>&1
 ```
 
 Replace `/root/trading_pm_data_feed` with the actual output of `pwd`.
