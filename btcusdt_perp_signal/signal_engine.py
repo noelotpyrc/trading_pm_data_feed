@@ -97,19 +97,19 @@ class SignalEngine:
         df = compute_features(df)
         latest = df.iloc[-1]
 
-        # Check signal
-        direction = check_signal(latest)
-        if direction is None:
-            log.info("[%s] No signal  buffer=%d", ts_str, len(self._buffer))
-            return
-
         # Extract feature values
         feat_vals = {}
         for col in FEATURE_COLS:
             val = latest.get(col)
             feat_vals[col] = round(float(val), 6) if val is not None and not np.isnan(val) else None
 
-        log.info("[%s] *** %s SIGNAL ***  features=%s", ts_str, direction.upper(), feat_vals)
+        # Check signal
+        direction = check_signal(latest)
+        if direction is None:
+            log.info("[%s] No signal  buffer=%d  feats=%s", ts_str, len(self._buffer), feat_vals)
+            return
+
+        log.info("[%s] *** %s SIGNAL ***  feats=%s", ts_str, direction.upper(), feat_vals)
 
         # Persist signal
         row_id = insert_signal(self.signals_db_path, ts_str, direction, feat_vals)
