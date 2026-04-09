@@ -103,13 +103,16 @@ class SignalEngine:
             val = latest.get(col)
             feat_vals[col] = round(float(val), 6) if val is not None and not np.isnan(val) else None
 
+        ohlcv = {"o": new_row["open"], "h": new_row["high"], "l": new_row["low"],
+                 "c": new_row["close"], "v": round(new_row["volume"], 2), "n": new_row["num_trades"]}
+
         # Check signal
         direction = check_signal(latest)
         if direction is None:
-            log.info("[%s] No signal  buffer=%d  feats=%s", ts_str, len(self._buffer), feat_vals)
+            log.info("[%s] No signal  buffer=%d  ohlcv=%s  feats=%s", ts_str, len(self._buffer), ohlcv, feat_vals)
             return
 
-        log.info("[%s] *** %s SIGNAL ***  feats=%s", ts_str, direction.upper(), feat_vals)
+        log.info("[%s] *** %s SIGNAL ***  ohlcv=%s  feats=%s", ts_str, direction.upper(), ohlcv, feat_vals)
 
         # Persist signal
         row_id = insert_signal(self.signals_db_path, ts_str, direction, feat_vals)
