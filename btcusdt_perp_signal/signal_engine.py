@@ -100,7 +100,7 @@ class SignalEngine:
         # Check signal
         direction = check_signal(latest)
         if direction is None:
-            log.debug("[%s] No signal", ts_str)
+            log.info("[%s] No signal  buffer=%d", ts_str, len(self._buffer))
             return
 
         # Extract feature values
