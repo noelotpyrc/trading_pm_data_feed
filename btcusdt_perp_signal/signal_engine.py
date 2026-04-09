@@ -22,7 +22,7 @@ import websocket
 
 from cex_data_feed.pipeline_1m.sqlite_db import read_last_n
 from btcusdt_perp_signal.features import compute_features, check_signal
-from btcusdt_perp_signal.signal_db import ensure_tables, insert_feature_log, insert_signal, mark_alerted
+from btcusdt_perp_signal.signal_db import ensure_signals_table, insert_signal, mark_alerted
 from btcusdt_perp_signal.alert import send_telegram, format_signal_message
 
 log = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ class SignalEngine:
     def __init__(self, db_path: Path, signals_db_path: Path | None = None):
         self.db_path = Path(db_path)
         self.signals_db_path = Path(signals_db_path) if signals_db_path else self.db_path
-        ensure_tables(self.signals_db_path)
+        ensure_signals_table(self.signals_db_path)
         self._ws = None
         self._buffer: pd.DataFrame | None = None  # rolling in-memory buffer
 
@@ -105,24 +105,13 @@ class SignalEngine:
 
         # Check signal
         direction = check_signal(latest)
-
-        # Persist every candle to feature log
-        ohlcv = {
-            "open": new_row["open"],
-            "high": new_row["high"],
-            "low": new_row["low"],
-            "close": new_row["close"],
-            "volume": new_row["volume"],
-        }
-        insert_feature_log(self.signals_db_path, ts_str, ohlcv, feat_vals, direction)
-
         if direction is None:
             log.info("[%s] No signal  buffer=%d  feats=%s", ts_str, len(self._buffer), feat_vals)
             return
 
         log.info("[%s] *** %s SIGNAL ***  feats=%s", ts_str, direction.upper(), feat_vals)
 
-        # Persist signal (separate table for quick lookup)
+        # Persist signal
         row_id = insert_signal(self.signals_db_path, ts_str, direction, feat_vals)
 
         # Send Telegram alert
