@@ -112,6 +112,44 @@ def query_db(sql: str) -> None:
     print(output, end="")
 
 
+def fetch_warmup_bars(n: int = 1800) -> str:
+    """Fetch last N deduped OHLCV rows from VPS DB as CSV string over SSH.
+
+    Returns raw CSV text (with header). Caller parses with pd.read_csv().
+    Pipes the Python script via stdin to avoid shell escaping issues.
+    """
+    host, project_dir = _get_config()
+    db_file = f"{project_dir}/data/btcusdt_perp_1m.sqlite"
+    script = f"""
+import sqlite3, csv, sys
+con = sqlite3.connect("{db_file}")
+rows = con.execute(
+    "SELECT timestamp, open, high, low, close, volume, num_trades "
+    "FROM ohlcv_btcusdt_1m "
+    "WHERE id IN ("
+    "  SELECT id FROM ("
+    "    SELECT id, ROW_NUMBER() OVER ("
+    "      PARTITION BY timestamp ORDER BY ingested_at DESC, id DESC"
+    "    ) AS rn FROM ohlcv_btcusdt_1m"
+    "  ) WHERE rn = 1"
+    ") "
+    "ORDER BY timestamp DESC LIMIT {n}"
+).fetchall()
+w = csv.writer(sys.stdout)
+w.writerow(["timestamp","open","high","low","close","volume","num_trades"])
+for r in reversed(rows):
+    w.writerow(r)
+con.close()
+"""
+    result = subprocess.run(
+        ["ssh", host, f"cd {project_dir} && .venv/bin/python"],
+        input=script, capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"SSH fetch_warmup_bars failed: {result.stderr.strip()}")
+    return result.stdout
+
+
 def tail_log(name: str, lines: int = 50) -> None:
     """Tail a log file on VPS."""
     _, project_dir = _get_config()
