@@ -17,7 +17,6 @@ Run as a long-lived process (systemd service or tmux/screen on VPS).
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import signal
 import sys
@@ -26,17 +25,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import websockets
+import websocket
 
 WS_URI = "wss://fstream.binance.com/ws/btcusdt@forceOrder"
 RECONNECT_DELAY_S = 5
 MAX_RECONNECT_DELAY_S = 60
-PING_INTERVAL_S = 180  # 3 min, matches Binance server ping
+
+_shutdown = False
 
 
-def log_dir_path(base: Path) -> Path:
-    base.mkdir(parents=True, exist_ok=True)
-    return base
+def _handle_signal(sig, _frame):
+    global _shutdown
+    print(f"\n[{fmt_now()}] Caught {signal.Signals(sig).name}, shutting down...")
+    _shutdown = True
+
+
+def fmt_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def get_log_file(base: Path) -> Path:
@@ -51,54 +56,56 @@ def append_event(base: Path, event: dict) -> Path:
     return fp
 
 
-def fmt_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-
-async def collect(log_base: Path, debug: bool = False) -> None:
+def collect(log_base: Path, debug: bool = False) -> None:
     delay = RECONNECT_DELAY_S
     total_events = 0
 
-    while True:
+    while not _shutdown:
+        ws = None
         try:
             print(f"[{fmt_now()}] Connecting to {WS_URI}")
-            async with websockets.connect(
-                WS_URI,
-                ping_interval=PING_INTERVAL_S,
-                ping_timeout=30,
-                close_timeout=10,
-            ) as ws:
-                print(f"[{fmt_now()}] Connected. Listening for BTCUSDT liquidations...")
-                delay = RECONNECT_DELAY_S  # reset on successful connect
+            ws = websocket.create_connection(WS_URI, timeout=10)
+            print(f"[{fmt_now()}] Connected. Listening for BTCUSDT liquidations...")
+            delay = RECONNECT_DELAY_S
 
-                async for raw in ws:
-                    data = json.loads(raw)
-                    # Add local receive timestamp
-                    data["_recv_ms"] = int(time.time() * 1000)
+            while not _shutdown:
+                try:
+                    raw = ws.recv()
+                except websocket.WebSocketTimeoutException:
+                    continue
 
-                    fp = append_event(log_base, data)
-                    total_events += 1
+                data = json.loads(raw)
+                data["_recv_ms"] = int(time.time() * 1000)
 
-                    o = data.get("o", {})
-                    print(
-                        f"[{fmt_now()}] #{total_events} "
-                        f"side={o.get('S')} price={o.get('p')} "
-                        f"qty={o.get('q')} filled={o.get('z')} "
-                        f"status={o.get('X')} → {fp.name}"
-                    )
+                fp = append_event(log_base, data)
+                total_events += 1
+
+                o = data.get("o", {})
+                print(
+                    f"[{fmt_now()}] #{total_events} "
+                    f"side={o.get('S')} price={o.get('p')} "
+                    f"qty={o.get('q')} filled={o.get('z')} "
+                    f"status={o.get('X')} → {fp.name}"
+                )
 
         except (
-            websockets.ConnectionClosed,
-            websockets.ConnectionClosedError,
+            websocket.WebSocketConnectionClosedException,
             ConnectionError,
             OSError,
         ) as e:
             print(f"[{fmt_now()}] Disconnected: {e}. Reconnecting in {delay}s...")
         except Exception as e:
             print(f"[{fmt_now()}] Unexpected error: {e}. Reconnecting in {delay}s...")
+        finally:
+            if ws:
+                try:
+                    ws.close()
+                except Exception:
+                    pass
 
-        await asyncio.sleep(delay)
-        delay = min(delay * 2, MAX_RECONNECT_DELAY_S)
+        if not _shutdown:
+            time.sleep(delay)
+            delay = min(delay * 2, MAX_RECONNECT_DELAY_S)
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -115,26 +122,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
-    log_base = log_dir_path(args.log_dir)
+    log_base = args.log_dir
+    log_base.mkdir(parents=True, exist_ok=True)
     print(f"[{fmt_now()}] Liquidation collector starting. Logs → {log_base.resolve()}")
 
-    shutdown_event = asyncio.Event()
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
 
-    async def run():
-        task = asyncio.create_task(collect(log_base, debug=args.debug))
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, lambda s=sig: _handle_signal(s, task))
-        await task
+    collect(log_base, debug=args.debug)
 
-    def _handle_signal(sig, task):
-        print(f"\n[{fmt_now()}] Caught {signal.Signals(sig).name}, shutting down...")
-        task.cancel()
-
-    try:
-        asyncio.run(run())
-    except (asyncio.CancelledError, KeyboardInterrupt):
-        pass
     print(f"[{fmt_now()}] Collector stopped.")
     return 0
 
