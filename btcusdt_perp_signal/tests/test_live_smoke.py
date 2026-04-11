@@ -26,8 +26,8 @@ import numpy as np
 import pandas as pd
 import websocket
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT.parent))
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
 
 from utils.local import fetch_warmup_bars
 from btcusdt_perp_signal.features import compute_features, check_signal
