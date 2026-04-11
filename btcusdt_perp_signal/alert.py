@@ -48,7 +48,10 @@ def send_discord(message: str) -> bool:
     try:
         req = urllib.request.Request(
             url, data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "SignalEngine/1.0",
+            },
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             # Discord returns 204 No Content on success
