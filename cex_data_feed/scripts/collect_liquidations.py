@@ -27,9 +27,12 @@ from typing import Optional
 
 import websocket
 
+from btcusdt_perp_signal.alert import send_discord
+
 WS_URI = "wss://fstream.binance.com/ws/btcusdt@forceOrder"
 RECONNECT_DELAY_S = 5
 MAX_RECONNECT_DELAY_S = 60
+ALERT_QTY_THRESHOLD = 1.0
 
 _shutdown = False
 
@@ -54,6 +57,21 @@ def append_event(base: Path, event: dict) -> Path:
     with open(fp, "a") as f:
         f.write(json.dumps(event, separators=(",", ":")) + "\n")
     return fp
+
+
+def format_liq_message(o: dict, event_time_ms: int | None) -> str:
+    ts = ""
+    if event_time_ms:
+        ts = datetime.fromtimestamp(event_time_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    side = o.get("S", "?")
+    lines = [
+        f"\U0001f4a5 **BTCUSDT {side} Side Liquidation**",
+        f"Qty: `{o.get('q')}` | Filled: `{o.get('z')}`",
+        f"Price: `{o.get('p')}` | Avg Price: `{o.get('ap')}`",
+        f"Status: `{o.get('X')}` | TIF: `{o.get('f')}`",
+        f"Time: `{ts}`",
+    ]
+    return "\n".join(lines)
 
 
 def collect(log_base: Path, debug: bool = False) -> None:
@@ -81,12 +99,17 @@ def collect(log_base: Path, debug: bool = False) -> None:
                 total_events += 1
 
                 o = data.get("o", {})
+                qty = float(o.get("q", "0"))
                 print(
                     f"[{fmt_now()}] #{total_events} "
                     f"side={o.get('S')} price={o.get('p')} "
                     f"qty={o.get('q')} filled={o.get('z')} "
                     f"status={o.get('X')} → {fp.name}"
                 )
+
+                if qty >= ALERT_QTY_THRESHOLD:
+                    msg = format_liq_message(o, data.get("E"))
+                    send_discord(msg)
 
         except (
             websocket.WebSocketConnectionClosedException,
