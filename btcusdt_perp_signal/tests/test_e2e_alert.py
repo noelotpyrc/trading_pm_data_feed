@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 import websocket
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from cex_data_feed.pipeline_1m.sqlite_db import read_last_n
