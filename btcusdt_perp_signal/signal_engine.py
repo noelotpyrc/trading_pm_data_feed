@@ -23,7 +23,7 @@ import websocket
 from cex_data_feed.pipeline_1m.sqlite_db import read_last_n
 from btcusdt_perp_signal.features import compute_features, check_signal
 from btcusdt_perp_signal.signal_db import ensure_signals_table, insert_signal, mark_alerted
-from btcusdt_perp_signal.alert import send_telegram, format_signal_message
+from btcusdt_perp_signal.alert import send_discord, format_signal_message
 
 log = logging.getLogger(__name__)
 
@@ -119,7 +119,7 @@ class SignalEngine:
 
         # Send Telegram alert
         msg = format_signal_message(ts_str, direction, feat_vals)
-        if send_telegram(msg):
+        if send_discord(msg):
             mark_alerted(self.signals_db_path, row_id)
 
     def _on_message(self, ws, message: str) -> None:

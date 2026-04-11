@@ -1,16 +1,15 @@
 """
-Telegram alert for signal notifications.
+Discord webhook alert for signal notifications.
 
-Reads TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID from environment or .env file.
-Falls back to logging if Telegram is not configured.
+Reads DISCORD_WEBHOOK_URL from environment or .env file.
+Falls back to logging if not configured.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import urllib.request
-import urllib.parse
-import json
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -35,45 +34,42 @@ def _load_env() -> None:
         os.environ.setdefault(key.strip(), val.strip())
 
 
-def send_telegram(message: str) -> bool:
-    """Send a message via Telegram bot. Returns True on success."""
+def send_discord(message: str) -> bool:
+    """Send a message via Discord webhook. Returns True on success."""
     _load_env()
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    url = os.environ.get("DISCORD_WEBHOOK_URL")
 
-    if not token or not chat_id:
-        log.warning("Telegram not configured (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)")
+    if not url:
+        log.warning("Discord not configured (missing DISCORD_WEBHOOK_URL)")
         return False
 
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    data = urllib.parse.urlencode({
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown",
-    }).encode()
+    payload = json.dumps({"content": message}).encode()
 
     try:
-        req = urllib.request.Request(url, data=data)
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={"Content-Type": "application/json"},
+        )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            result = json.loads(resp.read())
-            if result.get("ok"):
-                log.info("Telegram alert sent")
+            # Discord returns 204 No Content on success
+            if resp.status in (200, 204):
+                log.info("Discord alert sent")
                 return True
-            log.error("Telegram API error: %s", result)
+            log.error("Discord API error: status=%d", resp.status)
             return False
     except Exception as e:
-        log.error("Telegram send failed: %s", e)
+        log.error("Discord send failed: %s", e)
         return False
 
 
 def format_signal_message(timestamp: str, direction: str, features: dict) -> str:
-    """Format a signal alert message."""
+    """Format a signal alert message for Discord."""
     emoji = "\U0001f7e2" if direction == "long" else "\U0001f534"
     lines = [
-        f"{emoji} *BTCUSDT {direction.upper()} Signal*",
+        f"{emoji} **BTCUSDT {direction.upper()} Signal**",
         f"Time: `{timestamp}`",
         "",
-        "*Features:*",
+        "**Features:**",
     ]
     for key, val in features.items():
         lines.append(f"  {key}: `{val:.4f}`")
