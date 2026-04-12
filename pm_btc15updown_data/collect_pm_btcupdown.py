@@ -17,12 +17,15 @@ import argparse
 import json
 import signal
 import sys
+import threading
 import time
 import urllib.request
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+import websocket as ws_client
 
 # Allow running as a script
 if __name__ == "__main__":
@@ -37,6 +40,9 @@ CLOB_BASE = "https://clob.polymarket.com"
 EPOCH_S = 900  # 15 minutes
 ALERT_DELTA_FLOOR = 0.05  # minimum absolute delta to trigger alert
 
+BINANCE_WS_URI = "wss://fstream.binance.com/ws/btcusdt@bookTicker"
+BTC_HISTORY_SIZE = 30  # ~30s of ticks to keep
+
 _shutdown = False
 
 
@@ -44,6 +50,64 @@ def _handle_signal(sig, _frame):
     global _shutdown
     print(f"\n[{fmt_now()}] Caught {signal.Signals(sig).name}, shutting down...")
     _shutdown = True
+
+
+class BtcPriceFeed:
+    """Background thread that streams BTCUSDT best bid/ask from Binance."""
+
+    def __init__(self, maxlen: int = BTC_HISTORY_SIZE):
+        self.history: deque = deque(maxlen=maxlen)
+        self._thread: threading.Thread | None = None
+        self._ws = None
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        if self._ws:
+            try:
+                self._ws.close()
+            except Exception:
+                pass
+
+    def get_recent(self) -> list[dict]:
+        """Return a copy of recent BTC price snapshots."""
+        return list(self.history)
+
+    def _run(self):
+        delay = 5
+        while not _shutdown:
+            try:
+                print(f"[{fmt_now()}] BTC feed: connecting to {BINANCE_WS_URI}")
+                self._ws = ws_client.create_connection(BINANCE_WS_URI, timeout=10)
+                print(f"[{fmt_now()}] BTC feed: connected")
+                delay = 5
+                while not _shutdown:
+                    try:
+                        raw = self._ws.recv()
+                    except ws_client.WebSocketTimeoutException:
+                        continue
+                    data = json.loads(raw)
+                    self.history.append({
+                        "ts_ms": data.get("E", int(time.time() * 1000)),
+                        "bid": data.get("b"),
+                        "bid_size": data.get("B"),
+                        "ask": data.get("a"),
+                        "ask_size": data.get("A"),
+                    })
+            except Exception as e:
+                if not _shutdown:
+                    print(f"[{fmt_now()}] BTC feed: {e}. Reconnecting in {delay}s...")
+            finally:
+                if self._ws:
+                    try:
+                        self._ws.close()
+                    except Exception:
+                        pass
+            if not _shutdown:
+                time.sleep(delay)
+                delay = min(delay * 2, 60)
 
 
 def fmt_now() -> str:
@@ -141,7 +205,7 @@ def append_event(base: Path, event: dict) -> Path:
 
 def format_alert(
     market_title: str, outcomes: list, deltas: list[dict],
-    curr: dict, history: deque,
+    curr: dict, history: deque, btc_prices: list[dict],
 ) -> str:
     lines = [f"\U0001f4c8 **PM BTC 15m Up/Down Price Alert**", f"{market_title}", ""]
     for d in deltas:
@@ -163,6 +227,20 @@ def format_alert(
         up_t = snap["tokens"][0]
         lines.append(f"  {ts_str}  mid={up_t['mid']}  bid={up_t['bid']}({up_t['bid_size']}) ask={up_t['ask']}({up_t['ask_size']})")
     lines.append("```")
+    # BTC price action
+    if btc_prices:
+        lines.append("")
+        lines.append("**BTCUSDT perp (30s):**")
+        lines.append("```")
+        # Sample ~6 evenly spaced entries to avoid flooding
+        step = max(1, len(btc_prices) // 6)
+        sampled = btc_prices[::step]
+        if btc_prices[-1] not in sampled:
+            sampled.append(btc_prices[-1])
+        for tick in sampled:
+            ts_str = datetime.fromtimestamp(tick["ts_ms"] / 1000, tz=timezone.utc).strftime("%H:%M:%S")
+            lines.append(f"  {ts_str}  bid={tick['bid']} ask={tick['ask']}")
+        lines.append("```")
     return "\n".join(lines)
 
 
@@ -170,6 +248,7 @@ def collect(
     log_base: Path,
     poll_interval: float,
     threshold: float,
+    btc_feed: BtcPriceFeed | None = None,
 ) -> None:
     prev_snapshot: dict | None = None
     prev_epoch_ts: int | None = None
@@ -239,9 +318,10 @@ def collect(
                         "delta": delta,
                         "pct": pct,
                     }]
+                    btc_prices = btc_feed.get_recent() if btc_feed else []
                     msg = format_alert(
                         market_info["title"], market_info["outcomes"],
-                        deltas, snapshot, history,
+                        deltas, snapshot, history, btc_prices,
                     )
                     print(f"[{fmt_now()}] ALERT: Up ask {prev_ask} → {curr_ask} ({pct:+.1f}%)")
                     send_discord(msg, env_key="DISCORD_WEBHOOK_URL_PM")
@@ -275,8 +355,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    collect(log_base, args.poll_interval, args.threshold)
+    btc_feed = BtcPriceFeed()
+    btc_feed.start()
 
+    collect(log_base, args.poll_interval, args.threshold, btc_feed)
+
+    btc_feed.stop()
     print(f"[{fmt_now()}] Collector stopped.")
     return 0
 
