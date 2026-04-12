@@ -34,13 +34,13 @@ def _load_env() -> None:
         os.environ.setdefault(key.strip(), val.strip())
 
 
-def send_discord(message: str) -> bool:
+def send_discord(message: str, env_key: str = "DISCORD_WEBHOOK_URL") -> bool:
     """Send a message via Discord webhook. Returns True on success."""
     _load_env()
-    url = os.environ.get("DISCORD_WEBHOOK_URL")
+    url = os.environ.get(env_key)
 
     if not url:
-        log.warning("Discord not configured (missing DISCORD_WEBHOOK_URL)")
+        log.warning("Discord not configured (missing %s)", env_key)
         return False
 
     payload = json.dumps({"content": message}).encode()
