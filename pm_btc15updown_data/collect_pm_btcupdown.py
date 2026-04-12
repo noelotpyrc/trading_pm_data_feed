@@ -35,6 +35,7 @@ from btcusdt_perp_signal.alert import send_discord
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE = "https://clob.polymarket.com"
 EPOCH_S = 900  # 15 minutes
+ALERT_DELTA_FLOOR = 0.05  # minimum absolute delta to trigger alert
 
 _shutdown = False
 
@@ -230,7 +231,7 @@ def collect(
                 pct = delta / prev_ask * 100
                 outcome = market_info["outcomes"][up_idx] if up_idx < len(market_info["outcomes"]) else "Up"
 
-                if abs(pct) >= threshold * 100:
+                if abs(pct) >= threshold * 100 and abs(delta) >= ALERT_DELTA_FLOOR:
                     deltas = [{
                         "outcome": outcome,
                         "prev_mid": f"{prev_ask:.4f}",
