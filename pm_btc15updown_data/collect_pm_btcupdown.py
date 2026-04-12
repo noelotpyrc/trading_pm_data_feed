@@ -59,6 +59,7 @@ class BtcPriceFeed:
         self.history: deque = deque(maxlen=maxlen)
         self._thread: threading.Thread | None = None
         self._ws = None
+        self._last_store_s: float = 0
 
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -89,13 +90,17 @@ class BtcPriceFeed:
                     except ws_client.WebSocketTimeoutException:
                         continue
                     data = json.loads(raw)
-                    self.history.append({
-                        "ts_ms": data.get("E", int(time.time() * 1000)),
-                        "bid": data.get("b"),
-                        "bid_size": data.get("B"),
-                        "ask": data.get("a"),
-                        "ask_size": data.get("A"),
-                    })
+                    now_s = time.time()
+                    # Only store one snapshot per second
+                    if now_s - self._last_store_s >= 1.0:
+                        self.history.append({
+                            "ts_ms": data.get("E", int(now_s * 1000)),
+                            "bid": data.get("b"),
+                            "bid_size": data.get("B"),
+                            "ask": data.get("a"),
+                            "ask_size": data.get("A"),
+                        })
+                        self._last_store_s = now_s
             except Exception as e:
                 if not _shutdown:
                     print(f"[{fmt_now()}] BTC feed: {e}. Reconnecting in {delay}s...")
