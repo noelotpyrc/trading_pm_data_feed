@@ -40,8 +40,10 @@ CLOB_BASE = "https://clob.polymarket.com"
 EPOCH_S = 900  # 15 minutes
 ALERT_DELTA_FLOOR = 0.05  # minimum absolute delta to trigger alert
 
-BINANCE_WS_URI = "wss://fstream.binance.com/ws/btcusdt@bookTicker"
+BINANCE_WS_BOOK = "wss://fstream.binance.com/ws/btcusdt@bookTicker"
+BINANCE_WS_LIQ = "wss://fstream.binance.com/ws/btcusdt@forceOrder"
 BTC_HISTORY_SIZE = 30  # ~30s of ticks to keep
+LIQ_HISTORY_SIZE = 60  # ~60s of liquidation events
 
 _shutdown = False
 
@@ -80,8 +82,8 @@ class BtcPriceFeed:
         delay = 5
         while not _shutdown:
             try:
-                print(f"[{fmt_now()}] BTC feed: connecting to {BINANCE_WS_URI}")
-                self._ws = ws_client.create_connection(BINANCE_WS_URI, timeout=10)
+                print(f"[{fmt_now()}] BTC feed: connecting to {BINANCE_WS_BOOK}")
+                self._ws = ws_client.create_connection(BINANCE_WS_BOOK, timeout=10)
                 print(f"[{fmt_now()}] BTC feed: connected")
                 delay = 5
                 while not _shutdown:
@@ -104,6 +106,67 @@ class BtcPriceFeed:
             except Exception as e:
                 if not _shutdown:
                     print(f"[{fmt_now()}] BTC feed: {e}. Reconnecting in {delay}s...")
+            finally:
+                if self._ws:
+                    try:
+                        self._ws.close()
+                    except Exception:
+                        pass
+            if not _shutdown:
+                time.sleep(delay)
+                delay = min(delay * 2, 60)
+
+
+class LiquidationFeed:
+    """Background thread that streams BTCUSDT liquidations from Binance."""
+
+    def __init__(self, maxlen: int = LIQ_HISTORY_SIZE):
+        self.history: deque = deque(maxlen=maxlen)
+        self._thread: threading.Thread | None = None
+        self._ws = None
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        if self._ws:
+            try:
+                self._ws.close()
+            except Exception:
+                pass
+
+    def get_recent(self, window_s: float = 60.0) -> list[dict]:
+        """Return liquidation events from the last window_s seconds."""
+        cutoff = int((time.time() - window_s) * 1000)
+        return [e for e in self.history if e["ts_ms"] >= cutoff]
+
+    def _run(self):
+        delay = 5
+        while not _shutdown:
+            try:
+                print(f"[{fmt_now()}] Liq feed: connecting to {BINANCE_WS_LIQ}")
+                self._ws = ws_client.create_connection(BINANCE_WS_LIQ, timeout=10)
+                print(f"[{fmt_now()}] Liq feed: connected")
+                delay = 5
+                while not _shutdown:
+                    try:
+                        raw = self._ws.recv()
+                    except ws_client.WebSocketTimeoutException:
+                        continue
+                    data = json.loads(raw)
+                    o = data.get("o", {})
+                    self.history.append({
+                        "ts_ms": data.get("E", int(time.time() * 1000)),
+                        "side": o.get("S"),
+                        "qty": o.get("q"),
+                        "price": o.get("p"),
+                        "avg_price": o.get("ap"),
+                        "status": o.get("X"),
+                    })
+            except Exception as e:
+                if not _shutdown:
+                    print(f"[{fmt_now()}] Liq feed: {e}. Reconnecting in {delay}s...")
             finally:
                 if self._ws:
                     try:
@@ -211,6 +274,7 @@ def append_event(base: Path, event: dict) -> Path:
 def format_alert(
     market_title: str, outcomes: list, deltas: list[dict],
     curr: dict, history: deque, btc_prices: list[dict],
+    liq_events: list[dict] | None = None,
 ) -> str:
     lines = [f"\U0001f4c8 **PM BTC 15m Up/Down Price Alert**", f"{market_title}", ""]
     for d in deltas:
@@ -246,6 +310,16 @@ def format_alert(
             ts_str = datetime.fromtimestamp(tick["ts_ms"] / 1000, tz=timezone.utc).strftime("%H:%M:%S")
             lines.append(f"  {ts_str}  bid={tick['bid']} ask={tick['ask']}")
         lines.append("```")
+    # Liquidation events (60s)
+    total_qty = sum(float(liq.get("qty", 0)) for liq in liq_events) if liq_events else 0
+    lines.append("")
+    lines.append(f"**BTCUSDT liquidations (60s): {len(liq_events or [])} events, total qty: {total_qty:.3f} BTC**")
+    if liq_events:
+        lines.append("```")
+        for liq in liq_events:
+            ts_str = datetime.fromtimestamp(liq["ts_ms"] / 1000, tz=timezone.utc).strftime("%H:%M:%S")
+            lines.append(f"  {ts_str}  {liq['side']} qty={liq['qty']} price={liq['price']} avg={liq['avg_price']}")
+        lines.append("```")
     return "\n".join(lines)
 
 
@@ -254,6 +328,7 @@ def collect(
     poll_interval: float,
     threshold: float,
     btc_feed: BtcPriceFeed | None = None,
+    liq_feed: LiquidationFeed | None = None,
 ) -> None:
     prev_snapshot: dict | None = None
     prev_epoch_ts: int | None = None
@@ -324,9 +399,10 @@ def collect(
                         "pct": pct,
                     }]
                     btc_prices = btc_feed.get_recent() if btc_feed else []
+                    liq_events = liq_feed.get_recent(60.0) if liq_feed else []
                     msg = format_alert(
                         market_info["title"], market_info["outcomes"],
-                        deltas, snapshot, history, btc_prices,
+                        deltas, snapshot, history, btc_prices, liq_events,
                     )
                     print(f"[{fmt_now()}] ALERT: Up ask {prev_ask} → {curr_ask} ({pct:+.1f}%)")
                     send_discord(msg, env_key="DISCORD_WEBHOOK_URL_PM")
@@ -361,11 +437,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     signal.signal(signal.SIGTERM, _handle_signal)
 
     btc_feed = BtcPriceFeed()
+    liq_feed = LiquidationFeed()
     btc_feed.start()
+    liq_feed.start()
 
-    collect(log_base, args.poll_interval, args.threshold, btc_feed)
+    collect(log_base, args.poll_interval, args.threshold, btc_feed, liq_feed)
 
     btc_feed.stop()
+    liq_feed.stop()
     print(f"[{fmt_now()}] Collector stopped.")
     return 0
 
