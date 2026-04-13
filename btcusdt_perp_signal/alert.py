@@ -65,15 +65,20 @@ def send_discord(message: str, env_key: str = "DISCORD_WEBHOOK_URL") -> bool:
         return False
 
 
-def format_signal_message(timestamp: str, direction: str, features: dict) -> str:
+def format_signal_message(timestamp: str, direction: str, features: dict, ohlcv: dict | None = None) -> str:
     """Format a signal alert message for Discord."""
     emoji = "\U0001f7e2" if direction == "long" else "\U0001f534"
     lines = [
         f"{emoji} **BTCUSDT {direction.upper()} Signal**",
         f"Time: `{timestamp}`",
-        "",
-        "**Features:**",
     ]
+    if ohlcv:
+        lines.append("")
+        lines.append(f"**Trigger bar:**")
+        lines.append(f"  O: `{ohlcv['o']}` H: `{ohlcv['h']}` L: `{ohlcv['l']}` C: `{ohlcv['c']}`")
+        lines.append(f"  Vol: `{ohlcv['v']}` Trades: `{ohlcv['n']}`")
+    lines.append("")
+    lines.append("**Features:**")
     for key, val in features.items():
         lines.append(f"  {key}: `{val:.4f}`")
     return "\n".join(lines)

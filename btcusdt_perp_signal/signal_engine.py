@@ -117,8 +117,8 @@ class SignalEngine:
         # Persist signal
         row_id = insert_signal(self.signals_db_path, ts_str, direction, feat_vals)
 
-        # Send Telegram alert
-        msg = format_signal_message(ts_str, direction, feat_vals)
+        # Send Discord alert
+        msg = format_signal_message(ts_str, direction, feat_vals, ohlcv=ohlcv)
         if send_discord(msg):
             mark_alerted(self.signals_db_path, row_id)
 
