@@ -440,11 +440,11 @@ def format_alert(
     for i, t in enumerate(curr["tokens"]):
         label = outcomes[i] if i < len(outcomes) else f"token_{i}"
         lines.append(f"{label}: bid=`{t['bid']}` ({t['bid_size']}) / ask=`{t['ask']}` ({t['ask_size']})")
-    # 30s trailing Up prices
+    # Trailing Up prices (last 4)
     lines.append("")
-    lines.append("**Recent Up prices (30s):**")
+    lines.append("**Recent Up prices:**")
     lines.append("```")
-    for snap in history:
+    for snap in list(history)[-4:]:
         ts_str = datetime.fromtimestamp(snap["ts_ms"] / 1000, tz=timezone.utc).strftime("%H:%M:%S")
         up_t = snap["tokens"][0]
         lines.append(f"  {ts_str}  mid={up_t['mid']}  bid={up_t['bid']}({up_t['bid_size']}) ask={up_t['ask']}({up_t['ask_size']})")
@@ -468,9 +468,9 @@ def format_alert(
             ts_str = datetime.fromtimestamp(ds["ts_ms"] / 1000, tz=timezone.utc).strftime("%H:%M:%S")
             k_str = f"K={ds['strike_depth']}({ds['strike_side']})" if ds["strike_depth"] is not None else "K=OOR"
             lines.append(
-                f"  {ts_str}  bid={ds['best_bid']:.2f}  ask={ds['best_ask']:.2f}  micro={ds['micro']:.2f}  "
-                f"bV={ds['bid_vwap']:.2f}  aV={ds['ask_vwap']:.2f}  "
-                f"b20={ds['bid_20th']:.2f}  a20={ds['ask_20th']:.2f}"
+                f"  {ts_str}  {ds['best_bid']:.1f}/{ds['best_ask']:.1f}  "
+                f"micro={ds['micro']:.1f}  bV={ds['bid_vwap']:.1f}  aV={ds['ask_vwap']:.1f}  "
+                f"b20={ds['bid_20th']:.1f}  a20={ds['ask_20th']:.1f}"
             )
             lines.append(
                 f"            bidD={ds['bid_total']:.1f}  askD={ds['ask_total']:.1f}  imb={ds['imb']:.2f}  {k_str}"
@@ -571,10 +571,8 @@ def collect(
                         raw_depth = depth_feed.get_recent(30.0)
                         if raw_depth:
                             strike_f = float(strike) if strike else None
-                            step = max(1, len(raw_depth) // 10)
-                            sampled = raw_depth[::step]
-                            if raw_depth[-1] not in sampled:
-                                sampled.append(raw_depth[-1])
+                            step = max(1, (len(raw_depth) - 1) // 5)
+                            sampled = raw_depth[::step][:6]
                             depth_stats = [compute_depth_stats(s, strike_f) for s in sampled]
                     msg = format_alert(
                         market_info["title"], market_info["outcomes"],
