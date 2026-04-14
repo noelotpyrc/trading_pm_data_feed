@@ -42,8 +42,11 @@ ALERT_DELTA_FLOOR = 0.05  # minimum absolute delta to trigger alert
 
 BINANCE_WS_BOOK = "wss://fstream.binance.com/ws/btcusdt@bookTicker"
 BINANCE_WS_LIQ = "wss://fstream.binance.com/ws/btcusdt@forceOrder"
+BINANCE_WS_DEPTH = "wss://fstream.binance.com/ws/btcusdt@depth20@500ms"
+BINANCE_FAPI = "https://fapi.binance.com"
 BTC_HISTORY_SIZE = 30  # ~30s of ticks to keep
 LIQ_HISTORY_SIZE = 60  # ~60s of liquidation events
+DEPTH_HISTORY_SIZE = 30  # ~30s at 1/sec sampling
 
 _shutdown = False
 
@@ -178,6 +181,155 @@ class LiquidationFeed:
                 delay = min(delay * 2, 60)
 
 
+class DepthFeed:
+    """Background thread that streams BTCUSDT top-20 depth from Binance."""
+
+    def __init__(self, maxlen: int = DEPTH_HISTORY_SIZE):
+        self.history: deque = deque(maxlen=maxlen)
+        self._thread: threading.Thread | None = None
+        self._ws = None
+        self._last_store_s: float = 0
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        if self._ws:
+            try:
+                self._ws.close()
+            except Exception:
+                pass
+
+    def get_recent(self, window_s: float = 30.0) -> list[dict]:
+        """Return depth snapshots from the last window_s seconds."""
+        cutoff = int((time.time() - window_s) * 1000)
+        return [s for s in self.history if s["ts_ms"] >= cutoff]
+
+    def _run(self):
+        delay = 5
+        while not _shutdown:
+            try:
+                print(f"[{fmt_now()}] Depth feed: connecting to {BINANCE_WS_DEPTH}")
+                self._ws = ws_client.create_connection(BINANCE_WS_DEPTH, timeout=10)
+                print(f"[{fmt_now()}] Depth feed: connected")
+                delay = 5
+                while not _shutdown:
+                    try:
+                        raw = self._ws.recv()
+                    except ws_client.WebSocketTimeoutException:
+                        continue
+                    now_s = time.time()
+                    if now_s - self._last_store_s >= 1.0:
+                        data = json.loads(raw)
+                        # bids: [[price, qty], ...], asks: [[price, qty], ...]
+                        bids = [[float(p), float(q)] for p, q in data.get("b", [])]
+                        asks = [[float(p), float(q)] for p, q in data.get("a", [])]
+                        self.history.append({
+                            "ts_ms": data.get("E", int(now_s * 1000)),
+                            "bids": bids,
+                            "asks": asks,
+                        })
+                        self._last_store_s = now_s
+            except Exception as e:
+                if not _shutdown:
+                    print(f"[{fmt_now()}] Depth feed: {e}. Reconnecting in {delay}s...")
+            finally:
+                if self._ws:
+                    try:
+                        self._ws.close()
+                    except Exception:
+                        pass
+            if not _shutdown:
+                time.sleep(delay)
+                delay = min(delay * 2, 60)
+
+
+def compute_depth_stats(snap: dict, strike: float | None = None) -> dict:
+    """Compute order book stats from a single depth snapshot."""
+    bids = snap["bids"]  # [[price, qty], ...]
+    asks = snap["asks"]
+
+    bid_total = sum(q for _, q in bids)
+    ask_total = sum(q for _, q in asks)
+    imbalance = bid_total / ask_total if ask_total > 0 else 0
+
+    best_bid_p, best_bid_q = bids[0] if bids else (0, 0)
+    best_ask_p, best_ask_q = asks[0] if asks else (0, 0)
+    spread = best_ask_p - best_bid_p if best_bid_p > 0 and best_ask_p > 0 else 0
+
+    bid_vwap = sum(p * q for p, q in bids) / bid_total if bid_total > 0 else 0
+    ask_vwap = sum(p * q for p, q in asks) / ask_total if ask_total > 0 else 0
+
+    # Micro-price
+    if best_bid_q + best_ask_q > 0:
+        micro = (best_bid_p * best_ask_q + best_ask_p * best_bid_q) / (best_bid_q + best_ask_q)
+    else:
+        micro = 0
+
+    # 20th level prices
+    bid_20th = bids[-1][0] if len(bids) >= 20 else (bids[-1][0] if bids else 0)
+    ask_20th = asks[-1][0] if len(asks) >= 20 else (asks[-1][0] if asks else 0)
+
+    # Strike-to-price depth
+    strike_depth = None
+    strike_side = None
+    if strike is not None and best_bid_p > 0 and best_ask_p > 0:
+        mid = (best_bid_p + best_ask_p) / 2
+        if mid > strike:
+            # BTC above strike: sum bid qty between strike and best bid
+            strike_depth = sum(q for p, q in bids if p >= strike)
+            strike_side = "bid"
+            # Check if strike is within range
+            if bids and bids[-1][0] > strike:
+                pass  # all bids are above strike, depth is valid
+            elif not any(p <= strike for p, _ in bids):
+                strike_depth = None  # strike outside range
+        elif mid < strike:
+            # BTC below strike: sum ask qty between best ask and strike
+            strike_depth = sum(q for p, q in asks if p <= strike)
+            strike_side = "ask"
+            if not any(p >= strike for p, _ in asks):
+                strike_depth = None  # strike outside range
+
+    return {
+        "ts_ms": snap["ts_ms"],
+        "best_bid": best_bid_p,
+        "best_ask": best_ask_p,
+        "imb": round(imbalance, 3),
+        "bid_total": round(bid_total, 2),
+        "ask_total": round(ask_total, 2),
+        "bid_vwap": round(bid_vwap, 2),
+        "ask_vwap": round(ask_vwap, 2),
+        "micro": round(micro, 2),
+        "bid_20th": bid_20th,
+        "ask_20th": ask_20th,
+        "strike_depth": round(strike_depth, 2) if strike_depth is not None else None,
+        "strike_side": strike_side,
+    }
+
+
+def fetch_strike(epoch_ts: int, retries: int = 2) -> str | None:
+    """Fetch the BTC 1m candle open price at epoch_ts as strike price."""
+    epoch_ms = epoch_ts * 1000
+    url = (
+        f"{BINANCE_FAPI}/fapi/v1/klines"
+        f"?symbol=BTCUSDT&interval=1m&startTime={epoch_ms}&limit=1"
+    )
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "pm-collector/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            if data:
+                return data[0][1]  # open price
+        except Exception as e:
+            print(f"[{fmt_now()}] Strike fetch error (attempt {attempt+1}): {e}")
+        if attempt < retries - 1:
+            time.sleep(3)
+    return None
+
+
 def fmt_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
@@ -273,8 +425,9 @@ def append_event(base: Path, event: dict) -> Path:
 
 def format_alert(
     market_title: str, outcomes: list, deltas: list[dict],
-    curr: dict, history: deque, btc_prices: list[dict],
+    curr: dict, history: deque,
     liq_events: list[dict] | None = None,
+    depth_stats: list[dict] | None = None,
 ) -> str:
     lines = [f"\U0001f4c8 **PM BTC 15m Up/Down Price Alert**", f"{market_title}", ""]
     for d in deltas:
@@ -296,20 +449,6 @@ def format_alert(
         up_t = snap["tokens"][0]
         lines.append(f"  {ts_str}  mid={up_t['mid']}  bid={up_t['bid']}({up_t['bid_size']}) ask={up_t['ask']}({up_t['ask_size']})")
     lines.append("```")
-    # BTC price action
-    if btc_prices:
-        lines.append("")
-        lines.append("**BTCUSDT perp (30s):**")
-        lines.append("```")
-        # Sample ~6 evenly spaced entries to avoid flooding
-        step = max(1, len(btc_prices) // 6)
-        sampled = btc_prices[::step]
-        if btc_prices[-1] not in sampled:
-            sampled.append(btc_prices[-1])
-        for tick in sampled:
-            ts_str = datetime.fromtimestamp(tick["ts_ms"] / 1000, tz=timezone.utc).strftime("%H:%M:%S")
-            lines.append(f"  {ts_str}  bid={tick['bid']} ask={tick['ask']}")
-        lines.append("```")
     # Liquidation events (60s)
     total_qty = sum(float(liq.get("qty", 0)) for liq in liq_events) if liq_events else 0
     lines.append("")
@@ -320,6 +459,23 @@ def format_alert(
             ts_str = datetime.fromtimestamp(liq["ts_ms"] / 1000, tz=timezone.utc).strftime("%H:%M:%S")
             lines.append(f"  {ts_str}  {liq['side']} qty={liq['qty']} price={liq['price']} avg={liq['avg_price']}")
         lines.append("```")
+    # Unified book section (30s, 10 snapshots — price + depth + structure)
+    if depth_stats:
+        lines.append("")
+        lines.append("**BTCUSDT book (30s):**")
+        lines.append("```")
+        for ds in depth_stats:
+            ts_str = datetime.fromtimestamp(ds["ts_ms"] / 1000, tz=timezone.utc).strftime("%H:%M:%S")
+            k_str = f"K={ds['strike_depth']}({ds['strike_side']})" if ds["strike_depth"] is not None else "K=OOR"
+            lines.append(
+                f"  {ts_str}  bid={ds['best_bid']:.2f}  ask={ds['best_ask']:.2f}  micro={ds['micro']:.2f}  "
+                f"bV={ds['bid_vwap']:.2f}  aV={ds['ask_vwap']:.2f}  "
+                f"b20={ds['bid_20th']:.2f}  a20={ds['ask_20th']:.2f}"
+            )
+            lines.append(
+                f"            bidD={ds['bid_total']:.1f}  askD={ds['ask_total']:.1f}  imb={ds['imb']:.2f}  {k_str}"
+            )
+        lines.append("```")
     return "\n".join(lines)
 
 
@@ -327,12 +483,13 @@ def collect(
     log_base: Path,
     poll_interval: float,
     threshold: float,
-    btc_feed: BtcPriceFeed | None = None,
     liq_feed: LiquidationFeed | None = None,
+    depth_feed: DepthFeed | None = None,
 ) -> None:
     prev_snapshot: dict | None = None
     prev_epoch_ts: int | None = None
     market_info: dict | None = None
+    strike: str | None = None
     total_snapshots = 0
     # Keep ~30s of history (30s / poll_interval)
     max_history = max(1, int(30 / poll_interval))
@@ -346,6 +503,9 @@ def collect(
             market_info = resolve_market(epoch_ts)
             if market_info:
                 print(f"[{fmt_now()}] Market: {market_info['title']} ({market_info['slug']})")
+                strike = fetch_strike(epoch_ts)
+                if strike:
+                    print(f"[{fmt_now()}] Strike: {strike}")
                 prev_snapshot = None  # reset delta tracking on new epoch
                 history.clear()
             else:
@@ -353,6 +513,12 @@ def collect(
                 time.sleep(poll_interval)
                 continue
             prev_epoch_ts = epoch_ts
+
+        # Retry strike if missing
+        if market_info and strike is None:
+            strike = fetch_strike(epoch_ts, retries=1)
+            if strike:
+                print(f"[{fmt_now()}] Strike (retry): {strike}")
 
         # Fetch prices
         snapshot = fetch_prices(market_info["token_ids"])
@@ -398,11 +564,22 @@ def collect(
                         "delta": delta,
                         "pct": pct,
                     }]
-                    btc_prices = btc_feed.get_recent() if btc_feed else []
                     liq_events = liq_feed.get_recent(60.0) if liq_feed else []
+                    # Depth stats: 10 snapshots from 30s buffer
+                    depth_stats = None
+                    if depth_feed:
+                        raw_depth = depth_feed.get_recent(30.0)
+                        if raw_depth:
+                            strike_f = float(strike) if strike else None
+                            step = max(1, len(raw_depth) // 10)
+                            sampled = raw_depth[::step]
+                            if raw_depth[-1] not in sampled:
+                                sampled.append(raw_depth[-1])
+                            depth_stats = [compute_depth_stats(s, strike_f) for s in sampled]
                     msg = format_alert(
                         market_info["title"], market_info["outcomes"],
-                        deltas, snapshot, history, btc_prices, liq_events,
+                        deltas, snapshot, history, liq_events,
+                        depth_stats,
                     )
                     print(f"[{fmt_now()}] ALERT: Up ask {prev_ask} → {curr_ask} ({pct:+.1f}%)")
                     send_discord(msg, env_key="DISCORD_WEBHOOK_URL_PM")
@@ -436,15 +613,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    btc_feed = BtcPriceFeed()
     liq_feed = LiquidationFeed()
-    btc_feed.start()
+    depth_feed = DepthFeed()
     liq_feed.start()
+    depth_feed.start()
 
-    collect(log_base, args.poll_interval, args.threshold, btc_feed, liq_feed)
+    collect(log_base, args.poll_interval, args.threshold, liq_feed, depth_feed)
 
-    btc_feed.stop()
     liq_feed.stop()
+    depth_feed.stop()
     print(f"[{fmt_now()}] Collector stopped.")
     return 0
 
