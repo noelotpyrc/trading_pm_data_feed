@@ -138,11 +138,12 @@ def fetch_book_price(token_id: str) -> dict | None:
         return None
 
 
-def _fmt_price_line(label: str, p: dict | None) -> str:
+def _fmt_price_line(label: str, p: dict | None, strike: str | None) -> str:
     if not p:
         return f"{label}: --"
     return (
-        f"{label}: bid=`{p['bid']}` ({p['bid_size']}) "
+        f"{label} (K:`{strike or '?'}`): "
+        f"bid=`{p['bid']}` ({p['bid_size']}) "
         f"ask=`{p['ask']}` ({p['ask_size']}) "
         f"mid=`{p['mid']}`"
     )
@@ -157,14 +158,13 @@ def format_dual_message(
     """Format a dual market summary with buffered snapshots for Discord."""
     lines = ["📊 **PM Dual BTC Up/Down**"]
     lines.append(f"Time: `{fmt_now()}` | Remaining: `{remaining}s`")
-    lines.append(f"Strikes — 15m: `{strike_15m or '?'}` | 5m: `{strike_5m or '?'}`")
     lines.append("")
     for snap in snapshots:
         ts_str = datetime.fromtimestamp(
             snap["ts_ms"] / 1000, tz=timezone.utc
         ).strftime("%H:%M:%S")
-        m15 = _fmt_price_line("15m", snap.get("p15"))
-        m5 = _fmt_price_line("5m", snap.get("p5"))
+        m15 = _fmt_price_line("15m", snap.get("p15"), strike_15m)
+        m5 = _fmt_price_line("5m", snap.get("p5"), strike_5m)
         lines.append(f"`{ts_str}` {m15} | {m5}")
     return "\n".join(lines)
 
@@ -221,6 +221,12 @@ def collect(
             strike_5m = None
             display_buffer = []
 
+        # Retry 15m strike if missing
+        if market_15m and strike_15m is None:
+            strike_15m = fetch_strike(epoch_15m, retries=1)
+            if strike_15m:
+                print(f"[{fmt_now()}] 15m strike (retry): {strike_15m}")
+
         # Resolve 5m market when entering last 5 minutes
         if in_last_5m:
             epoch_5m = (now // EPOCH_5M) * EPOCH_5M
@@ -236,6 +242,12 @@ def collect(
                     print(f"[{fmt_now()}] 5m:  no market for {slug_5m}")
                     strike_5m = None
                 prev_5m_epoch = epoch_5m
+
+            # Retry 5m strike if missing
+            if market_5m and strike_5m is None:
+                strike_5m = fetch_strike(epoch_5m, retries=1)
+                if strike_5m:
+                    print(f"[{fmt_now()}] 5m  strike (retry): {strike_5m}")
 
         # Fetch Up token prices
         price_15m = None
