@@ -111,7 +111,7 @@ def resolve_market(slug: str) -> dict | None:
 
 
 def fetch_book_price(token_id: str) -> dict | None:
-    """Fetch best bid/ask from CLOB book for a single token (Up only)."""
+    """Fetch best bid/ask from CLOB book for a single token."""
     try:
         url = f"{CLOB_BASE}/book?token_id={token_id}"
         req = urllib.request.Request(url, headers={"User-Agent": "pm-dual/1.0"})
@@ -147,6 +147,88 @@ def _fmt_price_line(label: str, p: dict | None, strike: str | None) -> str:
         f"ask=`{p['ask']}` ({p['ask_size']}) "
         f"mid=`{p['mid']}`"
     )
+
+
+def check_arb(
+    strike_15m: str | None,
+    strike_5m: str | None,
+    up_15m: dict | None,
+    up_5m: dict | None,
+) -> dict | None:
+    """Check for arb: higher strike should have lower Up price.
+
+    Returns arb info dict if mispricing detected, else None.
+    """
+    if not all([strike_15m, strike_5m, up_15m, up_5m]):
+        return None
+
+    k15 = float(strike_15m)
+    k5 = float(strike_5m)
+    ask_15m = float(up_15m["ask"])
+    ask_5m = float(up_5m["ask"])
+    mid_15m = float(up_15m["mid"])
+    mid_5m = float(up_5m["mid"])
+
+    # Higher strike should have lower Up price
+    if k15 > k5 and (ask_15m >= ask_5m or mid_15m >= mid_5m):
+        return {
+            "higher": "15m", "lower": "5m",
+            "k_diff": round(k15 - k5, 2),
+            "ask_diff": round(ask_15m - ask_5m, 4),
+            "mid_diff": round(mid_15m - mid_5m, 4),
+        }
+    if k5 > k15 and (ask_5m >= ask_15m or mid_5m >= mid_15m):
+        return {
+            "higher": "5m", "lower": "15m",
+            "k_diff": round(k5 - k15, 2),
+            "ask_diff": round(ask_5m - ask_15m, 4),
+            "mid_diff": round(mid_5m - mid_15m, 4),
+        }
+    return None
+
+
+def _fmt_market_block(
+    label: str, strike: str | None,
+    up: dict | None, no: dict | None,
+) -> str:
+    """Format a market's YES + NO prices for Discord."""
+    lines = [f"**{label}** (K: `{strike or '?'}`)"]
+    if up:
+        lines.append(
+            f"  YES: bid=`{up['bid']}` ({up['bid_size']}) "
+            f"ask=`{up['ask']}` ({up['ask_size']}) mid=`{up['mid']}`"
+        )
+    else:
+        lines.append("  YES: --")
+    if no:
+        lines.append(
+            f"  NO:  bid=`{no['bid']}` ({no['bid_size']}) "
+            f"ask=`{no['ask']}` ({no['ask_size']}) mid=`{no['mid']}`"
+        )
+    else:
+        lines.append("  NO:  --")
+    return "\n".join(lines)
+
+
+def format_arb_message(
+    remaining: int,
+    strike_15m: str | None,
+    strike_5m: str | None,
+    arb: dict,
+    snap: dict,
+) -> str:
+    """Format an arb alert for Discord."""
+    lines = ["🚨 **PM Arb Signal**"]
+    lines.append(f"Time: `{fmt_now()}` | Remaining: `{remaining}s`")
+    lines.append(
+        f"**{arb['higher']}** has higher strike (+`{arb['k_diff']}`) "
+        f"but Up price ≥ **{arb['lower']}**"
+    )
+    lines.append(f"Ask diff: `{arb['ask_diff']}` | Mid diff: `{arb['mid_diff']}`")
+    lines.append("")
+    lines.append(_fmt_market_block("15m", strike_15m, snap.get("p15"), snap.get("no15")))
+    lines.append(_fmt_market_block("5m", strike_5m, snap.get("p5"), snap.get("no5")))
+    return "\n".join(lines)
 
 
 def format_dual_message(
@@ -249,15 +331,21 @@ def collect(
                 if strike_5m:
                     print(f"[{fmt_now()}] 5m  strike (retry): {strike_5m}")
 
-        # Fetch Up token prices
+        # Fetch YES and NO token prices
         price_15m = None
         price_5m = None
+        no_15m = None
+        no_5m = None
 
         if market_15m:
             price_15m = fetch_book_price(market_15m["token_ids"][0])
+            if len(market_15m["token_ids"]) > 1:
+                no_15m = fetch_book_price(market_15m["token_ids"][1])
 
         if market_5m and in_last_5m:
             price_5m = fetch_book_price(market_5m["token_ids"][0])
+            if len(market_5m["token_ids"]) > 1:
+                no_5m = fetch_book_price(market_5m["token_ids"][1])
 
         # Build snapshot
         snapshot = {
@@ -266,11 +354,13 @@ def collect(
                 "slug": market_15m["slug"] if market_15m else None,
                 "strike": strike_15m,
                 "up": price_15m,
+                "no": no_15m,
             } if market_15m else None,
             "m5": {
                 "slug": market_5m["slug"] if market_5m else None,
                 "strike": strike_5m,
                 "up": price_5m,
+                "no": no_5m,
             } if market_5m and in_last_5m else None,
         }
 
@@ -284,7 +374,20 @@ def collect(
                 "ts_ms": snapshot["ts_ms"],
                 "p15": price_15m,
                 "p5": price_5m,
+                "no15": no_15m,
+                "no5": no_5m,
             })
+
+            # Arb check on every poll
+            arb = check_arb(strike_15m, strike_5m, price_15m, price_5m)
+            if arb:
+                remaining = end_15m - now
+                msg = format_arb_message(
+                    remaining, strike_15m, strike_5m, arb,
+                    display_buffer[-1],
+                )
+                print(f"[{fmt_now()}] *** ARB SIGNAL: {arb['higher']} strike higher by {arb['k_diff']}, ask_diff={arb['ask_diff']}, mid_diff={arb['mid_diff']}")
+                send_discord(msg, env_key=DISCORD_ENV_KEY)
 
         # Display every display_interval
         if now_s - last_display_s >= display_interval:
