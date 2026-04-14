@@ -3,13 +3,13 @@
 Dual PM BTC Up/Down price display: 15m and 5m markets side by side.
 
 Tracks the current 15m market continuously. In the last 5 minutes of the
-15m window, also tracks the overlapping 5m market. Records both every 5s,
-prints a summary every 15s. Shows strike price (BTC 1m candle open at epoch
-start) for each market.
+15m window, also tracks the overlapping 5m market. Polls every 3s and
+checks for arb: higher-strike market with equal/higher Up price.
+Sends Discord alert on arb signal with YES + NO prices for both markets.
 
 Usage:
   python -m pm_btc15updown_data.collect_pm_dual \
-    --log-dir data/pm_dual [--poll-interval 5] [--display-interval 15]
+    --log-dir data/pm_dual [--poll-interval 3]
 
 Output: daily JSONL files with both market snapshots.
 """
@@ -138,16 +138,6 @@ def fetch_book_price(token_id: str) -> dict | None:
         return None
 
 
-def _fmt_price_line(label: str, p: dict | None, strike: str | None) -> str:
-    if not p:
-        return f"{label}: --"
-    return (
-        f"{label} (K:`{strike or '?'}`): "
-        f"bid=`{p['bid']}` ({p['bid_size']}) "
-        f"ask=`{p['ask']}` ({p['ask_size']}) "
-        f"mid=`{p['mid']}`"
-    )
-
 
 def check_arb(
     strike_15m: str | None,
@@ -231,25 +221,6 @@ def format_arb_message(
     return "\n".join(lines)
 
 
-def format_dual_message(
-    remaining: int,
-    strike_15m: str | None,
-    strike_5m: str | None,
-    snapshots: list[dict],
-) -> str:
-    """Format a dual market summary with buffered snapshots for Discord."""
-    lines = ["📊 **PM Dual BTC Up/Down**"]
-    lines.append(f"Time: `{fmt_now()}` | Remaining: `{remaining}s`")
-    lines.append("")
-    for snap in snapshots:
-        ts_str = datetime.fromtimestamp(
-            snap["ts_ms"] / 1000, tz=timezone.utc
-        ).strftime("%H:%M:%S")
-        m15 = _fmt_price_line("15m", snap.get("p15"), strike_15m)
-        m5 = _fmt_price_line("5m", snap.get("p5"), strike_5m)
-        lines.append(f"`{ts_str}` {m15} | {m5}")
-    return "\n".join(lines)
-
 
 def get_log_file(base: Path) -> Path:
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -266,7 +237,6 @@ def append_event(base: Path, event: dict) -> Path:
 def collect(
     log_base: Path,
     poll_interval: float,
-    display_interval: float,
 ) -> None:
     prev_15m_epoch: int | None = None
     prev_5m_epoch: int | None = None
@@ -275,8 +245,6 @@ def collect(
     strike_15m: str | None = None
     strike_5m: str | None = None
     total_snapshots = 0
-    last_display_s: float = 0
-    display_buffer: list[dict] = []  # buffered snapshots for Discord
 
     while not _shutdown:
         now = int(time.time())
@@ -301,7 +269,6 @@ def collect(
             market_5m = None
             prev_5m_epoch = None
             strike_5m = None
-            display_buffer = []
 
         # Retry 15m strike if missing
         if market_15m and strike_15m is None:
@@ -368,55 +335,20 @@ def collect(
         fp = append_event(log_base, snapshot)
         total_snapshots += 1
 
-        # Buffer snapshot for Discord (only during overlap window)
+        # Arb check (only during overlap window)
         if in_last_5m:
-            display_buffer.append({
-                "ts_ms": snapshot["ts_ms"],
-                "p15": price_15m,
-                "p5": price_5m,
-                "no15": no_15m,
-                "no5": no_5m,
-            })
-
-            # Arb check on every poll
             arb = check_arb(strike_15m, strike_5m, price_15m, price_5m)
             if arb:
                 remaining = end_15m - now
+                snap = {
+                    "p15": price_15m, "p5": price_5m,
+                    "no15": no_15m, "no5": no_5m,
+                }
                 msg = format_arb_message(
-                    remaining, strike_15m, strike_5m, arb,
-                    display_buffer[-1],
+                    remaining, strike_15m, strike_5m, arb, snap,
                 )
                 print(f"[{fmt_now()}] *** ARB SIGNAL: {arb['higher']} strike higher by {arb['k_diff']}, ask_diff={arb['ask_diff']}, mid_diff={arb['mid_diff']}")
                 send_discord(msg, env_key=DISCORD_ENV_KEY)
-
-        # Display every display_interval
-        if now_s - last_display_s >= display_interval:
-            last_display_s = now_s
-            remaining = end_15m - now
-            parts = [f"#{total_snapshots}"]
-
-            if price_15m:
-                parts.append(
-                    f"15m Up: bid={price_15m['bid']} ask={price_15m['ask']} "
-                    f"mid={price_15m['mid']} strike={strike_15m or '?'}"
-                )
-
-            if price_5m:
-                parts.append(
-                    f"5m Up: bid={price_5m['bid']} ask={price_5m['ask']} "
-                    f"mid={price_5m['mid']} strike={strike_5m or '?'}"
-                )
-
-            parts.append(f"rem={remaining}s")
-            print(f"[{fmt_now()}] {' | '.join(parts)}")
-
-            # Send to Discord only during last 5 minutes
-            if in_last_5m and display_buffer:
-                msg = format_dual_message(
-                    remaining, strike_15m, strike_5m, display_buffer,
-                )
-                send_discord(msg, env_key=DISCORD_ENV_KEY)
-                display_buffer = []
 
         time.sleep(poll_interval)
 
@@ -429,8 +361,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--log-dir", type=Path, default=Path("data/pm_dual"),
         help="Directory for daily JSONL log files (default: data/pm_dual)",
     )
-    p.add_argument("--poll-interval", type=float, default=5.0)
-    p.add_argument("--display-interval", type=float, default=15.0)
+    p.add_argument("--poll-interval", type=float, default=3.0)
     return p.parse_args(argv)
 
 
@@ -440,12 +371,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     log_base.mkdir(parents=True, exist_ok=True)
     print(f"[{fmt_now()}] PM Dual collector starting")
     print(f"  Logs → {log_base.resolve()}")
-    print(f"  Poll: {args.poll_interval}s | Display: {args.display_interval}s")
+    print(f"  Poll: {args.poll_interval}s")
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    collect(log_base, args.poll_interval, args.display_interval)
+    collect(log_base, args.poll_interval)
 
     print(f"[{fmt_now()}] Collector stopped.")
     return 0
