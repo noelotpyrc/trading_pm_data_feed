@@ -159,6 +159,10 @@ def check_arb(
     mid_15m = float(up_15m["mid"])
     mid_5m = float(up_5m["mid"])
 
+    # Skip if either market has no ask (no liquidity, effectively resolved)
+    if ask_15m == 0 or ask_5m == 0:
+        return None
+
     # Higher strike should have lower Up price
     if k15 > k5 and (ask_15m >= ask_5m or mid_15m >= mid_5m):
         return {
