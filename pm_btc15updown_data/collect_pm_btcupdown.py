@@ -572,7 +572,9 @@ def collect(
                         if raw_depth:
                             strike_f = float(strike) if strike else None
                             step = max(1, (len(raw_depth) - 1) // 5)
-                            sampled = raw_depth[::step][:6]
+                            sampled = raw_depth[::step][:5]
+                            if raw_depth[-1] not in sampled:
+                                sampled.append(raw_depth[-1])
                             depth_stats = [compute_depth_stats(s, strike_f) for s in sampled]
                     msg = format_alert(
                         market_info["title"], market_info["outcomes"],
