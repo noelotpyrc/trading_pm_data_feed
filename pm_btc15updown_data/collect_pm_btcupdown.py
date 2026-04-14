@@ -428,18 +428,16 @@ def format_alert(
     curr: dict, history: deque,
     liq_events: list[dict] | None = None,
     depth_stats: list[dict] | None = None,
+    strike: str | None = None,
 ) -> str:
-    lines = [f"\U0001f4c8 **PM BTC 15m Up/Down Price Alert**", f"{market_title}", ""]
+    lines = [f"\U0001f4c8 **PM BTC 15m Up/Down Price Alert**"]
+    lines.append(f"{market_title} | Strike: `{strike or '?'}`")
+    lines.append("")
     for d in deltas:
         lines.append(
             f"**{d['outcome']}**: `{d['prev_mid']}` → `{d['curr_mid']}` "
             f"(delta: `{d['delta']:+.4f}`, `{d['pct']:+.1f}%`)"
         )
-    lines.append("")
-    # Current bid/ask with sizes
-    for i, t in enumerate(curr["tokens"]):
-        label = outcomes[i] if i < len(outcomes) else f"token_{i}"
-        lines.append(f"{label}: bid=`{t['bid']}` ({t['bid_size']}) / ask=`{t['ask']}` ({t['ask_size']})")
     # Trailing Up prices (last 4)
     lines.append("")
     lines.append("**Recent Up prices:**")
@@ -579,7 +577,7 @@ def collect(
                     msg = format_alert(
                         market_info["title"], market_info["outcomes"],
                         deltas, snapshot, history, liq_events,
-                        depth_stats,
+                        depth_stats, strike,
                     )
                     print(f"[{fmt_now()}] ALERT: Up ask {prev_ask} → {curr_ask} ({pct:+.1f}%)")
                     send_discord(msg, env_key="DISCORD_WEBHOOK_URL_PM")
