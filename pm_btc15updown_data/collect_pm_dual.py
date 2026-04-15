@@ -144,6 +144,8 @@ def check_arb(
     strike_5m: str | None,
     up_15m: dict | None,
     up_5m: dict | None,
+    no_15m: dict | None = None,
+    no_5m: dict | None = None,
 ) -> dict | None:
     """Check for arb: higher strike should have lower Up price.
 
@@ -159,8 +161,10 @@ def check_arb(
     mid_15m = float(up_15m["mid"])
     mid_5m = float(up_5m["mid"])
 
-    # Skip if either market has no ask (no liquidity, effectively resolved)
-    if ask_15m == 0 or ask_5m == 0:
+    # Skip if any YES or NO ask is 0 (no liquidity, market resolved)
+    no_15m_ask = float(no_15m["ask"]) if no_15m else 0
+    no_5m_ask = float(no_5m["ask"]) if no_5m else 0
+    if ask_15m == 0 or ask_5m == 0 or no_15m_ask == 0 or no_5m_ask == 0:
         return None
 
     # Higher strike should have lower Up price
@@ -341,7 +345,7 @@ def collect(
 
         # Arb check (only during overlap window)
         if in_last_5m:
-            arb = check_arb(strike_15m, strike_5m, price_15m, price_5m)
+            arb = check_arb(strike_15m, strike_5m, price_15m, price_5m, no_15m, no_5m)
             if arb:
                 remaining = end_15m - now
                 snap = {
