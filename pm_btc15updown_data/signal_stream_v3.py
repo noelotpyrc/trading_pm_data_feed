@@ -317,6 +317,52 @@ def format_epoch_close_alert(
 
 
 # ---------------------------------------------------------------------------
+# Artifact loading with daily rollover
+# ---------------------------------------------------------------------------
+
+def _today_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def load_best_artifact(artifact_dir: Path) -> DailySignalArtifactV3 | None:
+    """Load today's artifact if available, else most recent prior date."""
+    today = _today_utc()
+    today_path = artifact_dir / today
+    if today_path.exists():
+        return DailySignalArtifactV3.load(today_path)
+    # Fall back to most recent date-named subdir <= today
+    candidates = sorted(
+        (p for p in artifact_dir.iterdir() if p.is_dir() and p.name <= today),
+        key=lambda p: p.name,
+        reverse=True,
+    )
+    if not candidates:
+        return None
+    return DailySignalArtifactV3.load(candidates[0])
+
+
+def maybe_reload_artifact(
+    artifact: DailySignalArtifactV3,
+    artifact_dir: Path,
+) -> DailySignalArtifactV3:
+    """If today's artifact differs from loaded one, swap it in."""
+    today = _today_utc()
+    if artifact.score_date == today:
+        return artifact
+    today_path = artifact_dir / today
+    if not today_path.exists():
+        return artifact
+    try:
+        new_artifact = DailySignalArtifactV3.load(today_path)
+        print(f"[{fmt_now()}] Artifact rollover: {artifact.score_date} -> "
+              f"{new_artifact.score_date}")
+        return new_artifact
+    except Exception as e:
+        print(f"[{fmt_now()}] Artifact reload failed: {e}")
+        return artifact
+
+
+# ---------------------------------------------------------------------------
 # Main stream loop
 # ---------------------------------------------------------------------------
 
@@ -328,15 +374,17 @@ def run_stream(
     webhook_key: str,
     debug: bool = False,
 ) -> int:
-    # Load artifact
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    artifact_path = artifact_dir / today
-    if not artifact_path.exists():
-        print(f"[{fmt_now()}] ERROR: artifact not found at {artifact_path}")
+    # Load artifact (falls back to most recent if today's isn't built yet)
+    artifact = load_best_artifact(artifact_dir)
+    if artifact is None:
+        print(f"[{fmt_now()}] ERROR: no artifact found in {artifact_dir}")
         return 1
-    artifact = DailySignalArtifactV3.load(artifact_path)
-    print(f"[{fmt_now()}] Artifact loaded: {len(artifact.models)} models, "
-          f"z_pool={artifact.z_pool.size}")
+    today = _today_utc()
+    if artifact.score_date != today:
+        print(f"[{fmt_now()}] WARN: using stale artifact {artifact.score_date} "
+              f"(today={today}); will swap when today's is built")
+    print(f"[{fmt_now()}] Artifact loaded: score_date={artifact.score_date}, "
+          f"{len(artifact.models)} models, z_pool={artifact.z_pool.size}")
 
     # Load OHLCV buffer from SQLite
     buf = OhlcvBuffer()
@@ -367,6 +415,9 @@ def run_stream(
         # Wait for kline close (instant wake) or PM poll timeout (3s)
         kline.bar_ready.wait(timeout=PM_POLL_S)
         kline.bar_ready.clear()
+
+        # Daily artifact rollover (cheap filesystem stat)
+        artifact = maybe_reload_artifact(artifact, artifact_dir)
 
         # Retry market resolution if needed
         if market is None:
