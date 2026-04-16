@@ -508,10 +508,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                    help="Path to 1m OHLCV SQLite database")
     p.add_argument("--artifact-dir", type=Path, default=Path("data/artifacts_v3"),
                    help="Artifact directory (default: data/artifacts_v3)")
-    p.add_argument("--prob-high", type=float, default=0.70,
-                   help="Upper prob threshold for alert (default: 0.70)")
-    p.add_argument("--prob-low", type=float, default=0.30,
-                   help="Lower prob threshold for alert (default: 0.30)")
+    p.add_argument("--prob-high", type=float, default=0.90,
+                   help="Upper prob threshold for alert (default: 0.90)")
+    p.add_argument("--prob-low", type=float, default=0.10,
+                   help="Lower prob threshold for alert (default: 0.10)")
     p.add_argument("--webhook-key", type=str, default="DISCORD_WEBHOOK_URL_SIGNAL_V3",
                    help="Env var for Discord webhook (default: DISCORD_WEBHOOK_URL_SIGNAL_V3)")
     p.add_argument("--debug", action="store_true", help="Verbose output")
