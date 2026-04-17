@@ -33,7 +33,7 @@ WS_URI = "wss://fstream.binance.com/ws/btcusdt@forceOrder"
 RECONNECT_DELAY_S = 5
 MAX_RECONNECT_DELAY_S = 60
 ALERT_QTY_THRESHOLD = 1.0
-HEARTBEAT_INTERVAL_S = 300  # 5 minutes
+HEARTBEAT_INTERVAL_S = 900  # 15 minutes
 
 _shutdown = False
 
@@ -76,13 +76,13 @@ def format_liq_message(o: dict, event_time_ms: int | None) -> str:
 
 
 def format_heartbeat(events: list[dict]) -> str:
-    """Format a 5m liquidation heartbeat summary."""
+    """Format a 15m liquidation heartbeat summary."""
     buy_qty = sum(float(e.get("qty", 0)) for e in events if e.get("side") == "BUY")
     sell_qty = sum(float(e.get("qty", 0)) for e in events if e.get("side") == "SELL")
     buy_count = sum(1 for e in events if e.get("side") == "BUY")
     sell_count = sum(1 for e in events if e.get("side") == "SELL")
     lines = [
-        f"\U0001f493 **BTCUSDT Liq Heartbeat (5m)**",
+        f"\U0001f493 **BTCUSDT Liq Heartbeat (15m)**",
         f"BUY (short liq):  `{buy_count}` events, `{buy_qty:.3f}` BTC",
         f"SELL (long liq):  `{sell_count}` events, `{sell_qty:.3f}` BTC",
         f"Total: `{buy_count + sell_count}` events, `{buy_qty + sell_qty:.3f}` BTC",
@@ -144,7 +144,7 @@ def collect(log_base: Path, debug: bool = False) -> None:
                     msg = format_liq_message(o, data.get("E"))
                     send_discord(msg)
 
-                # 5m heartbeat
+                # 15m heartbeat
                 now_s = time.time()
                 if now_s - last_heartbeat_s >= HEARTBEAT_INTERVAL_S:
                     msg = format_heartbeat(heartbeat_buffer)
