@@ -233,8 +233,8 @@ def format_window_summary(
 
     yes_asks = stats["lower_yes_asks"]
     no_asks = stats["lower_no_asks"]
-    yes_min, yes_avg = min(yes_asks), sum(yes_asks) / len(yes_asks)
-    no_min, no_avg = min(no_asks), sum(no_asks) / len(no_asks)
+    yes_min, yes_max, yes_avg = min(yes_asks), max(yes_asks), sum(yes_asks) / len(yes_asks)
+    no_min, no_max, no_avg = min(no_asks), max(no_asks), sum(no_asks) / len(no_asks)
 
     lines = ["\U0001f3c1 **PM Dual Window Summary**"]
     lines.append(f"Window close: `{end_str}` | Captured: `{fmt_now()}`")
@@ -245,8 +245,8 @@ def format_window_summary(
         f"Max mid diff: `{stats['max_mid_diff']:.4f}`"
     )
     lines.append(f"Lower-strike ask stats (n=`{len(yes_asks)}`):")
-    lines.append(f"  YES: min=`{yes_min:.4f}` avg=`{yes_avg:.4f}`")
-    lines.append(f"  NO:  min=`{no_min:.4f}` avg=`{no_avg:.4f}`")
+    lines.append(f"  YES: min=`{yes_min:.4f}` max=`{yes_max:.4f}` avg=`{yes_avg:.4f}`")
+    lines.append(f"  NO:  min=`{no_min:.4f}` max=`{no_max:.4f}` avg=`{no_avg:.4f}`")
     lines.append("")
     lines.append("**Final prices:**")
     lines.append(_fmt_market_block("15m", strike_15m, final_up_15m, final_no_15m))
