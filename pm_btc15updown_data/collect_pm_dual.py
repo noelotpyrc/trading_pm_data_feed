@@ -167,17 +167,19 @@ def check_arb(
     if ask_15m == 0 or ask_5m == 0 or no_15m_ask == 0 or no_5m_ask == 0:
         return None
 
-    # Higher strike should have lower Up price — require ask_diff > 0
-    if k15 > k5 and ask_15m > ask_5m:
+    # Higher strike should have lower Up price (relaxed: ask or mid >= 0)
+    if k15 > k5 and (ask_15m >= ask_5m or mid_15m >= mid_5m):
         return {
             "higher": "15m", "lower": "5m",
+            "higher_ask": ask_15m, "lower_ask": ask_5m,
             "k_diff": round(k15 - k5, 2),
             "ask_diff": round(ask_15m - ask_5m, 4),
             "mid_diff": round(mid_15m - mid_5m, 4),
         }
-    if k5 > k15 and ask_5m > ask_15m:
+    if k5 > k15 and (ask_5m >= ask_15m or mid_5m >= mid_15m):
         return {
             "higher": "5m", "lower": "15m",
+            "higher_ask": ask_5m, "lower_ask": ask_15m,
             "k_diff": round(k5 - k15, 2),
             "ask_diff": round(ask_5m - ask_15m, 4),
             "mid_diff": round(mid_5m - mid_15m, 4),
@@ -208,43 +210,45 @@ def _fmt_market_block(
     return "\n".join(lines)
 
 
-def format_final_message(
+def format_window_summary(
     epoch_15m: int,
     strike_15m: str | None,
     strike_5m: str | None,
-    up_15m: dict | None, no_15m: dict | None,
-    up_5m: dict | None, no_5m: dict | None,
+    stats: dict,
+    final_up_15m: dict | None, final_no_15m: dict | None,
+    final_up_5m: dict | None, final_no_5m: dict | None,
 ) -> str:
-    """Format a final snapshot near window close for Discord."""
+    """Format an aggregated window summary (only when arb triggered)."""
     end_str = datetime.fromtimestamp(
         epoch_15m + EPOCH_15M, tz=timezone.utc
     ).strftime("%H:%M:%S UTC")
-    lines = ["\U0001f3c1 **PM Dual Final Snapshot**"]
+    first_str = datetime.fromtimestamp(
+        stats["first_ts"], tz=timezone.utc
+    ).strftime("%H:%M:%S")
+    last_str = datetime.fromtimestamp(
+        stats["last_ts"], tz=timezone.utc
+    ).strftime("%H:%M:%S")
+
+    lower_asks = stats["lower_asks"]
+    min_ask = min(lower_asks)
+    avg_ask = sum(lower_asks) / len(lower_asks)
+
+    lines = ["\U0001f3c1 **PM Dual Window Summary**"]
     lines.append(f"Window close: `{end_str}` | Captured: `{fmt_now()}`")
     lines.append("")
-    lines.append(_fmt_market_block("15m", strike_15m, up_15m, no_15m))
-    lines.append(_fmt_market_block("5m", strike_5m, up_5m, no_5m))
-    return "\n".join(lines)
-
-
-def format_arb_message(
-    remaining: int,
-    strike_15m: str | None,
-    strike_5m: str | None,
-    arb: dict,
-    snap: dict,
-) -> str:
-    """Format an arb alert for Discord."""
-    lines = ["🚨 **PM Arb Signal**"]
-    lines.append(f"Time: `{fmt_now()}` | Remaining: `{remaining}s`")
+    lines.append(f"**Arb triggers**: `{stats['count']}` | First: `{first_str}` | Last: `{last_str}`")
     lines.append(
-        f"**{arb['higher']}** has higher strike (+`{arb['k_diff']}`) "
-        f"but Up price ≥ **{arb['lower']}**"
+        f"Max ask diff: `{stats['max_ask_diff']:.4f}` | "
+        f"Max mid diff: `{stats['max_mid_diff']:.4f}`"
     )
-    lines.append(f"Ask diff: `{arb['ask_diff']}` | Mid diff: `{arb['mid_diff']}`")
+    lines.append(
+        f"Lower-strike ask (n=`{len(lower_asks)}`): "
+        f"min=`{min_ask:.4f}` avg=`{avg_ask:.4f}`"
+    )
     lines.append("")
-    lines.append(_fmt_market_block("15m", strike_15m, snap.get("p15"), snap.get("no15")))
-    lines.append(_fmt_market_block("5m", strike_5m, snap.get("p5"), snap.get("no5")))
+    lines.append("**Final prices:**")
+    lines.append(_fmt_market_block("15m", strike_15m, final_up_15m, final_no_15m))
+    lines.append(_fmt_market_block("5m", strike_5m, final_up_5m, final_no_5m))
     return "\n".join(lines)
 
 
@@ -272,7 +276,16 @@ def collect(
     strike_15m: str | None = None
     strike_5m: str | None = None
     total_snapshots = 0
-    final_sent_epoch: int | None = None  # epoch for which we've sent final snapshot
+    summary_sent_epoch: int | None = None  # epoch for which window summary sent
+    # Per-window trigger stats (reset on epoch change)
+    trigger_stats: dict = {
+        "count": 0,
+        "first_ts": None,
+        "last_ts": None,
+        "max_ask_diff": 0.0,
+        "max_mid_diff": 0.0,
+        "lower_asks": [],
+    }
 
     while not _shutdown:
         now = int(time.time())
@@ -297,6 +310,14 @@ def collect(
             market_5m = None
             prev_5m_epoch = None
             strike_5m = None
+            trigger_stats = {
+                "count": 0,
+                "first_ts": None,
+                "last_ts": None,
+                "max_ask_diff": 0.0,
+                "max_mid_diff": 0.0,
+                "lower_asks": [],
+            }
 
         # Retry 15m strike if missing
         if market_15m and strike_15m is None:
@@ -367,24 +388,28 @@ def collect(
         if in_last_5m:
             arb = check_arb(strike_15m, strike_5m, price_15m, price_5m, no_15m, no_5m)
             if arb:
-                remaining = end_15m - now
-                snap = {
-                    "p15": price_15m, "p5": price_5m,
-                    "no15": no_15m, "no5": no_5m,
-                }
-                msg = format_arb_message(
-                    remaining, strike_15m, strike_5m, arb, snap,
+                trigger_stats["count"] += 1
+                if trigger_stats["first_ts"] is None:
+                    trigger_stats["first_ts"] = now
+                trigger_stats["last_ts"] = now
+                if arb["ask_diff"] > trigger_stats["max_ask_diff"]:
+                    trigger_stats["max_ask_diff"] = arb["ask_diff"]
+                if arb["mid_diff"] > trigger_stats["max_mid_diff"]:
+                    trigger_stats["max_mid_diff"] = arb["mid_diff"]
+                trigger_stats["lower_asks"].append(arb["lower_ask"])
+                print(
+                    f"[{fmt_now()}] arb #{trigger_stats['count']}: "
+                    f"{arb['higher']} K+{arb['k_diff']} ask_diff={arb['ask_diff']} "
+                    f"mid_diff={arb['mid_diff']} lower_ask={arb['lower_ask']}"
                 )
-                print(f"[{fmt_now()}] *** ARB SIGNAL: {arb['higher']} strike higher by {arb['k_diff']}, ask_diff={arb['ask_diff']}, mid_diff={arb['mid_diff']}")
-                send_discord(msg, env_key=DISCORD_ENV_KEY)
 
-        # Final snapshot at T-1s before window close
+        # Window summary at T-1s before 15m close (only if arb triggered at least once)
         remaining = end_15m - time.time()
         if (
-            market_15m and final_sent_epoch != epoch_15m
+            market_15m and summary_sent_epoch != epoch_15m
+            and trigger_stats["count"] > 0
             and 0 < remaining <= poll_interval + 1
         ):
-            # Sleep until T-1s, then take a fresh snapshot
             sleep_until = max(0, remaining - 1)
             if sleep_until > 0:
                 time.sleep(sleep_until)
@@ -399,14 +424,13 @@ def collect(
                 final_up_5m = fetch_book_price(market_5m["token_ids"][0])
                 if len(market_5m["token_ids"]) > 1:
                     final_no_5m = fetch_book_price(market_5m["token_ids"][1])
-            msg = format_final_message(
-                epoch_15m, strike_15m, strike_5m,
+            msg = format_window_summary(
+                epoch_15m, strike_15m, strike_5m, trigger_stats,
                 final_up_15m, final_no_15m, final_up_5m, final_no_5m,
             )
-            print(f"[{fmt_now()}] *** FINAL SNAPSHOT for epoch {epoch_15m}")
+            print(f"[{fmt_now()}] *** WINDOW SUMMARY: {trigger_stats['count']} triggers")
             send_discord(msg, env_key=DISCORD_ENV_KEY)
-            final_sent_epoch = epoch_15m
-            # Skip the normal sleep since we already waited
+            summary_sent_epoch = epoch_15m
             continue
 
         time.sleep(poll_interval)
