@@ -167,15 +167,15 @@ def check_arb(
     if ask_15m == 0 or ask_5m == 0 or no_15m_ask == 0 or no_5m_ask == 0:
         return None
 
-    # Higher strike should have lower Up price
-    if k15 > k5 and (ask_15m >= ask_5m or mid_15m >= mid_5m):
+    # Higher strike should have lower Up price — require ask_diff > 0
+    if k15 > k5 and ask_15m > ask_5m:
         return {
             "higher": "15m", "lower": "5m",
             "k_diff": round(k15 - k5, 2),
             "ask_diff": round(ask_15m - ask_5m, 4),
             "mid_diff": round(mid_15m - mid_5m, 4),
         }
-    if k5 > k15 and (ask_5m >= ask_15m or mid_5m >= mid_15m):
+    if k5 > k15 and ask_5m > ask_15m:
         return {
             "higher": "5m", "lower": "15m",
             "k_diff": round(k5 - k15, 2),
