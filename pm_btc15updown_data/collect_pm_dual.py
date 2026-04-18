@@ -208,6 +208,25 @@ def _fmt_market_block(
     return "\n".join(lines)
 
 
+def format_final_message(
+    epoch_15m: int,
+    strike_15m: str | None,
+    strike_5m: str | None,
+    up_15m: dict | None, no_15m: dict | None,
+    up_5m: dict | None, no_5m: dict | None,
+) -> str:
+    """Format a final snapshot near window close for Discord."""
+    end_str = datetime.fromtimestamp(
+        epoch_15m + EPOCH_15M, tz=timezone.utc
+    ).strftime("%H:%M:%S UTC")
+    lines = ["\U0001f3c1 **PM Dual Final Snapshot**"]
+    lines.append(f"Window close: `{end_str}` | Captured: `{fmt_now()}`")
+    lines.append("")
+    lines.append(_fmt_market_block("15m", strike_15m, up_15m, no_15m))
+    lines.append(_fmt_market_block("5m", strike_5m, up_5m, no_5m))
+    return "\n".join(lines)
+
+
 def format_arb_message(
     remaining: int,
     strike_15m: str | None,
@@ -253,6 +272,7 @@ def collect(
     strike_15m: str | None = None
     strike_5m: str | None = None
     total_snapshots = 0
+    final_sent_epoch: int | None = None  # epoch for which we've sent final snapshot
 
     while not _shutdown:
         now = int(time.time())
@@ -357,6 +377,37 @@ def collect(
                 )
                 print(f"[{fmt_now()}] *** ARB SIGNAL: {arb['higher']} strike higher by {arb['k_diff']}, ask_diff={arb['ask_diff']}, mid_diff={arb['mid_diff']}")
                 send_discord(msg, env_key=DISCORD_ENV_KEY)
+
+        # Final snapshot at T-1s before window close
+        remaining = end_15m - time.time()
+        if (
+            market_15m and final_sent_epoch != epoch_15m
+            and 0 < remaining <= poll_interval + 1
+        ):
+            # Sleep until T-1s, then take a fresh snapshot
+            sleep_until = max(0, remaining - 1)
+            if sleep_until > 0:
+                time.sleep(sleep_until)
+            final_up_15m = fetch_book_price(market_15m["token_ids"][0])
+            final_no_15m = (
+                fetch_book_price(market_15m["token_ids"][1])
+                if len(market_15m["token_ids"]) > 1 else None
+            )
+            final_up_5m = None
+            final_no_5m = None
+            if market_5m:
+                final_up_5m = fetch_book_price(market_5m["token_ids"][0])
+                if len(market_5m["token_ids"]) > 1:
+                    final_no_5m = fetch_book_price(market_5m["token_ids"][1])
+            msg = format_final_message(
+                epoch_15m, strike_15m, strike_5m,
+                final_up_15m, final_no_15m, final_up_5m, final_no_5m,
+            )
+            print(f"[{fmt_now()}] *** FINAL SNAPSHOT for epoch {epoch_15m}")
+            send_discord(msg, env_key=DISCORD_ENV_KEY)
+            final_sent_epoch = epoch_15m
+            # Skip the normal sleep since we already waited
+            continue
 
         time.sleep(poll_interval)
 
