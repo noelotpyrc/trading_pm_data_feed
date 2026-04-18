@@ -172,6 +172,7 @@ def check_arb(
         return {
             "higher": "15m", "lower": "5m",
             "higher_ask": ask_15m, "lower_ask": ask_5m,
+            "lower_no_ask": no_5m_ask,
             "k_diff": round(k15 - k5, 2),
             "ask_diff": round(ask_15m - ask_5m, 4),
             "mid_diff": round(mid_15m - mid_5m, 4),
@@ -180,6 +181,7 @@ def check_arb(
         return {
             "higher": "5m", "lower": "15m",
             "higher_ask": ask_5m, "lower_ask": ask_15m,
+            "lower_no_ask": no_15m_ask,
             "k_diff": round(k5 - k15, 2),
             "ask_diff": round(ask_5m - ask_15m, 4),
             "mid_diff": round(mid_5m - mid_15m, 4),
@@ -229,9 +231,10 @@ def format_window_summary(
         stats["last_ts"], tz=timezone.utc
     ).strftime("%H:%M:%S")
 
-    lower_asks = stats["lower_asks"]
-    min_ask = min(lower_asks)
-    avg_ask = sum(lower_asks) / len(lower_asks)
+    yes_asks = stats["lower_yes_asks"]
+    no_asks = stats["lower_no_asks"]
+    yes_min, yes_avg = min(yes_asks), sum(yes_asks) / len(yes_asks)
+    no_min, no_avg = min(no_asks), sum(no_asks) / len(no_asks)
 
     lines = ["\U0001f3c1 **PM Dual Window Summary**"]
     lines.append(f"Window close: `{end_str}` | Captured: `{fmt_now()}`")
@@ -241,10 +244,9 @@ def format_window_summary(
         f"Max ask diff: `{stats['max_ask_diff']:.4f}` | "
         f"Max mid diff: `{stats['max_mid_diff']:.4f}`"
     )
-    lines.append(
-        f"Lower-strike ask (n=`{len(lower_asks)}`): "
-        f"min=`{min_ask:.4f}` avg=`{avg_ask:.4f}`"
-    )
+    lines.append(f"Lower-strike ask stats (n=`{len(yes_asks)}`):")
+    lines.append(f"  YES: min=`{yes_min:.4f}` avg=`{yes_avg:.4f}`")
+    lines.append(f"  NO:  min=`{no_min:.4f}` avg=`{no_avg:.4f}`")
     lines.append("")
     lines.append("**Final prices:**")
     lines.append(_fmt_market_block("15m", strike_15m, final_up_15m, final_no_15m))
@@ -284,7 +286,8 @@ def collect(
         "last_ts": None,
         "max_ask_diff": 0.0,
         "max_mid_diff": 0.0,
-        "lower_asks": [],
+        "lower_yes_asks": [],
+        "lower_no_asks": [],
     }
 
     while not _shutdown:
@@ -316,7 +319,8 @@ def collect(
                 "last_ts": None,
                 "max_ask_diff": 0.0,
                 "max_mid_diff": 0.0,
-                "lower_asks": [],
+                "lower_yes_asks": [],
+                "lower_no_asks": [],
             }
 
         # Retry 15m strike if missing
@@ -396,11 +400,13 @@ def collect(
                     trigger_stats["max_ask_diff"] = arb["ask_diff"]
                 if arb["mid_diff"] > trigger_stats["max_mid_diff"]:
                     trigger_stats["max_mid_diff"] = arb["mid_diff"]
-                trigger_stats["lower_asks"].append(arb["lower_ask"])
+                trigger_stats["lower_yes_asks"].append(arb["lower_ask"])
+                trigger_stats["lower_no_asks"].append(arb["lower_no_ask"])
                 print(
                     f"[{fmt_now()}] arb #{trigger_stats['count']}: "
                     f"{arb['higher']} K+{arb['k_diff']} ask_diff={arb['ask_diff']} "
-                    f"mid_diff={arb['mid_diff']} lower_ask={arb['lower_ask']}"
+                    f"mid_diff={arb['mid_diff']} "
+                    f"lower_yes={arb['lower_ask']} lower_no={arb['lower_no_ask']}"
                 )
 
         # Window summary at T-1s before 15m close (only if arb triggered at least once)
