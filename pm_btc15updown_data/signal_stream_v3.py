@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -45,9 +46,14 @@ from pm_btc15updown_data.collect_pm_btcupdown import (
 )
 
 KLINE_WS = "wss://fstream.binance.com/ws/btcusdt@kline_1m"
-PM_POLL_S = 3.0
-ALERT_SNAPSHOTS = 4
+LOOP_TIMEOUT_S = 1.0
+POLL_INTERVAL_MS = 3_000
+ALERT_POLL_COUNT = 10
+DELTA_ENTRY_THRESHOLD = 0.05
+NEAR_CLOSE_OFFSET_MS = 2_000
+NEAR_CLOSE_RETRY_MS = 1_000
 GROUP_MINUTES = 15
+WINDOW_MS = GROUP_MINUTES * 60 * 1000
 
 _shutdown = False
 
@@ -221,6 +227,74 @@ def compute_prob_yes(
 
 
 # ---------------------------------------------------------------------------
+# Poll helpers + contrarian job
+# ---------------------------------------------------------------------------
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _safe_fetch(token_ids):
+    try:
+        return fetch_prices(token_ids)
+    except Exception as e:
+        print(f"[{fmt_now()}] PM fetch error: {e}")
+        return None
+
+
+def _extract_token(snap: dict, idx: int) -> dict:
+    tok = snap["tokens"][idx] if idx < len(snap["tokens"]) else {}
+
+    def _f(v):
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "ts_ms": snap["ts_ms"],
+        "ask": _f(tok.get("ask")),
+        "bid": _f(tok.get("bid")),
+        "ask_size": tok.get("ask_size"),
+        "bid_size": tok.get("bid_size"),
+    }
+
+
+@dataclass
+class ContrarianJob:
+    fired_at_ms: int
+    window_start_ms: int
+    window_end_ms: int
+    ttl_at_trigger: int
+    prob: float
+    fair: float              # fair value of target token
+    strike: float
+    btc_close: float
+    action: str              # "BUY NO" | "BUY YES"
+    target_idx: int          # 0=YES | 1=NO
+    outcomes: list[str]      # market outcome labels
+
+    polls: list[dict] = field(default_factory=list)   # {ts_ms, ask, bid, delta}
+    post_trigger_attempted: int = 0
+    next_poll_at_ms: int = 0
+    post_trigger_done: bool = False
+
+    near_close_snapshot: dict | None = None  # {ts_ms, tokens: [tok0, tok1]}
+    near_close_attempted: int = 0
+    near_close_next_ms: int = 0
+
+    summary_sent: bool = False
+
+    @property
+    def key(self) -> str:
+        return f"{self.window_start_ms}:{self.ttl_at_trigger}"
+
+    @property
+    def real_entry_count(self) -> int:
+        return sum(1 for p in self.polls if (p.get("delta") or 0) > DELTA_ENTRY_THRESHOLD)
+
+
+# ---------------------------------------------------------------------------
 # Discord message formatting
 # ---------------------------------------------------------------------------
 
@@ -236,64 +310,77 @@ def _fmt_pm_token_line(snapshot: dict, token_idx: int, outcomes: list[str]) -> s
     )
 
 
-def format_signal_alert(
-    prob: float, ttl: int, strike: float, close: float,
-    market: dict, pm_snapshots: list[dict],
+def format_contrarian_summary(
+    job: ContrarianJob, market: dict, settlement: float,
 ) -> str:
-    # Contrarian: high prob → buy NO, low prob → buy YES
-    buy_no = prob > 0.5
-    if buy_no:
-        action = "BUY NO"
-        emoji = "\U0001f534"
-        fair = 1.0 - prob
-        target_idx = 1   # NO token
-        other_idx = 0    # YES token
-    else:
-        action = "BUY YES"
-        emoji = "\U0001f7e2"
-        fair = prob
-        target_idx = 0   # YES token
-        other_idx = 1    # NO token
-
-    delta_pct = (close - strike) / strike * 100
-    outcomes = market.get("outcomes", ["YES", "NO"])
-    target_label = outcomes[target_idx] if target_idx < len(outcomes) else "target"
-    other_label = outcomes[other_idx] if other_idx < len(outcomes) else "other"
+    outs = job.outcomes or ["YES", "NO"]
+    target_label = outs[job.target_idx] if job.target_idx < len(outs) else "target"
+    settle_label = outs[0] if settlement > job.strike else outs[1]
+    hit = (
+        (job.action == "BUY NO" and settlement <= job.strike) or
+        (job.action == "BUY YES" and settlement > job.strike)
+    )
+    result = "\u2705" if hit else "\u274c"
+    emoji = "\U0001f534" if job.action == "BUY NO" else "\U0001f7e2"
+    delta_pct = (settlement - job.strike) / job.strike * 100
+    window_close_utc = datetime.fromtimestamp(
+        job.window_end_ms / 1000, tz=timezone.utc
+    ).strftime("%Y-%m-%d %H:%M UTC")
+    trigger_utc = datetime.fromtimestamp(
+        job.fired_at_ms / 1000, tz=timezone.utc
+    ).strftime("%H:%M:%S")
 
     lines = [
-        f"{emoji} **{action}** | P(Yes)=`{prob:.4f}` -> fair {target_label}=`{fair:.4f}`",
-        f"TTL={ttl} | Strike=`{strike:.1f}` | BTC=`{close:.1f}` ({delta_pct:+.2f}%)",
+        f"{emoji} **Contrarian {job.action}** | P(Yes)=`{job.prob:.4f}`  "
+        f"fair {target_label}=`{job.fair:.4f}`  TTL={job.ttl_at_trigger}",
         f"{market.get('title', '')}",
+        f"Window: {window_close_utc}  (trigger {trigger_utc})",
+        f"Strike=`{job.strike:.1f}`  BTC@trigger=`{job.btc_close:.1f}`  "
+        f"Settle=`{settlement:.1f}` ({delta_pct:+.2f}%) -> {settle_label} {result}",
+        "",
     ]
 
-    if pm_snapshots:
-        # Target token with delta
-        lines.append("")
-        lines.append(f"**> {target_label} (target)**  fair=`{fair:.4f}`")
+    # Delta stats over 10 polls
+    deltas = [p["delta"] for p in job.polls if p.get("delta") is not None]
+    if deltas:
+        lines.append(
+            f"Real entries: **{job.real_entry_count}/{len(job.polls)}** "
+            f"(delta > {DELTA_ENTRY_THRESHOLD})  "
+            f"delta min=`{min(deltas):.4f}` "
+            f"med=`{float(np.median(deltas)):.4f}` "
+            f"max=`{max(deltas):.4f}`"
+        )
+
+    # Per-poll table
+    if job.polls:
         lines.append("```")
-        lines.append(f"  {'time':8s}  {'ask(size)':13s}  {'bid(size)':13s}  delta(ask-fair)")
-        for snap in pm_snapshots:
-            t = snap["tokens"][target_idx]
-            ask_f = float(t["ask"])
-            delta = ask_f - fair
+        lines.append(f"  {'time':8s}  {'ask':6s}  {'delta':7s}")
+        for p in job.polls:
             ts_str = datetime.fromtimestamp(
-                snap["ts_ms"] / 1000, tz=timezone.utc
+                p["ts_ms"] / 1000, tz=timezone.utc
             ).strftime("%H:%M:%S")
-            lines.append(
-                f"  {ts_str}  {t['ask']}({t['ask_size']:>4s})      "
-                f"{t['bid']}({t['bid_size']:>4s})      {delta:+.4f}"
-            )
+            ask_s = f"{p['ask']:.4f}" if p.get("ask") is not None else "  -   "
+            delta_s = f"{p['delta']:+.4f}" if p.get("delta") is not None else "   -   "
+            entry = " *" if (p.get("delta") or 0) > DELTA_ENTRY_THRESHOLD else ""
+            lines.append(f"  {ts_str}  {ask_s}  {delta_s}{entry}")
         lines.append("```")
 
-        # Other token condensed (first + last)
-        lines.append(f"**{other_label}**")
-        lines.append("```")
-        shown = [pm_snapshots[0]]
-        if len(pm_snapshots) > 1:
-            shown.append(pm_snapshots[-1])
-        for snap in shown:
-            lines.append(_fmt_pm_token_line(snap, other_idx, outcomes))
-        lines.append("```")
+    # Near-close both tokens
+    if job.near_close_snapshot:
+        nc_ts = datetime.fromtimestamp(
+            job.near_close_snapshot["ts_ms"] / 1000, tz=timezone.utc
+        ).strftime("%H:%M:%S")
+        lines.append(f"Near-close @ {nc_ts}:")
+        for i, tok in enumerate(job.near_close_snapshot["tokens"]):
+            label = outs[i] if i < len(outs) else f"t{i}"
+            ask = tok.get("ask")
+            bid = tok.get("bid")
+            ask_s = f"{ask:.4f}" if ask is not None else "-"
+            bid_s = f"{bid:.4f}" if bid is not None else "-"
+            marker = "  <- target" if i == job.target_idx else ""
+            lines.append(f"  {label:4s}: ask=`{ask_s}`  bid=`{bid_s}`{marker}")
+    else:
+        lines.append("Near-close: (no snapshot)")
 
     return "\n".join(lines)
 
@@ -408,12 +495,11 @@ def run_stream(
 
     print(f"[{fmt_now()}] Streaming — prob_high={prob_high}, prob_low={prob_low}")
 
-    # Alert state: collect N PM snapshots after signal trigger, then send
-    pending: dict | None = None
+    jobs: list[ContrarianJob] = []
 
     while not _shutdown:
-        # Wait for kline close (instant wake) or PM poll timeout (3s)
-        kline.bar_ready.wait(timeout=PM_POLL_S)
+        # 1s timeout so scheduled polls stay crisp
+        kline.bar_ready.wait(timeout=LOOP_TIMEOUT_S)
         kline.bar_ready.clear()
 
         # Daily artifact rollover (cheap filesystem stat)
@@ -436,28 +522,43 @@ def run_stream(
             bar_ts = datetime.fromtimestamp(
                 bar["t"] / 1000, tz=timezone.utc
             ).strftime("%H:%M:%S")
+            win_start = (bar["t"] // WINDOW_MS) * WINDOW_MS
+            win_end = win_start + WINDOW_MS
 
-            # Epoch close: TTL=15 is the setter bar
+            # --- Window close: summarize jobs in the closing window ---
             if ttl == GROUP_MINUTES and market and strike:
-                pm_snap = fetch_prices(market["token_ids"])
-                if pm_snap:
-                    msg = format_epoch_close_alert(
-                        market, pm_snap, strike, bar["c"],
-                    )
-                    print(f"[{fmt_now()}] Epoch close: settlement={bar['c']:.1f}")
-                    send_discord(msg, env_key=webhook_key)
+                settlement = bar["c"]
+                for job in jobs:
+                    if job.window_start_ms != win_start or job.summary_sent:
+                        continue
+                    # Last-chance near-close poll
+                    if job.near_close_snapshot is None:
+                        snap = _safe_fetch(market["token_ids"])
+                        if snap:
+                            tokens = [_extract_token(snap, i)
+                                      for i in range(len(snap.get("tokens", [])))]
+                            job.near_close_snapshot = {"ts_ms": snap["ts_ms"], "tokens": tokens}
+                    # Only send if at least one real entry
+                    if job.real_entry_count > 0:
+                        msg = format_contrarian_summary(job, market, settlement)
+                        send_discord(msg, env_key=webhook_key)
+                        print(f"[{fmt_now()}] Summary sent for {job.key} "
+                              f"(real_entries={job.real_entry_count})")
+                    else:
+                        print(f"[{fmt_now()}] No real entry for {job.key}, skipping Discord")
+                    job.summary_sent = True
+                jobs = [j for j in jobs if not j.summary_sent]
 
                 # Transition to new epoch
-                new_epoch = ((bar["t"] // 1000 + 60) // 900) * 900
+                new_epoch = win_end // 1000
                 market = resolve_market(new_epoch)
                 strike = bar["c"]
                 epoch_ts = new_epoch
-                pending = None
                 if market:
                     print(f"[{fmt_now()}] New epoch: {market['title']}, "
                           f"strike={strike:.1f}")
 
-            # Compute signal
+            # --- Compute signal and check trigger ---
             features = buf.compute_features()
             if features is not None and strike is not None and market:
                 prob = compute_prob_yes(features, ttl, strike, bar["c"], artifact)
@@ -466,34 +567,69 @@ def run_stream(
                         print(f"[{fmt_now()}] {bar_ts} TTL={ttl} "
                               f"prob={prob:.4f} close={bar['c']:.1f}")
                     if ttl <= 2 and (prob > prob_high or prob < prob_low):
-                        print(f"[{fmt_now()}] TRIGGER: prob={prob:.4f} TTL={ttl}")
-                        pending = {
-                            "prob": prob, "ttl": ttl,
-                            "strike": strike, "close": bar["c"],
-                            "snapshots": [], "remaining": ALERT_SNAPSHOTS,
-                        }
-                        # Immediately collect first PM snapshot
-                        pm_snap = fetch_prices(market["token_ids"])
-                        if pm_snap:
-                            pending["snapshots"].append(pm_snap)
-                            pending["remaining"] -= 1
+                        buy_no = prob > prob_high
+                        action = "BUY NO" if buy_no else "BUY YES"
+                        fair = (1.0 - prob) if buy_no else prob
+                        target_idx = 1 if buy_no else 0
+                        outs = list(market.get("outcomes") or ["YES", "NO"])
+                        job = ContrarianJob(
+                            fired_at_ms=bar["t"] + 60_000,
+                            window_start_ms=win_start,
+                            window_end_ms=win_end,
+                            ttl_at_trigger=ttl,
+                            prob=prob,
+                            fair=fair,
+                            strike=strike,
+                            btc_close=bar["c"],
+                            action=action,
+                            target_idx=target_idx,
+                            outcomes=outs,
+                            next_poll_at_ms=now_ms(),
+                            near_close_next_ms=win_end - NEAR_CLOSE_OFFSET_MS,
+                        )
+                        jobs.append(job)
+                        print(f"[{fmt_now()}] TRIGGER: {action} prob={prob:.4f} "
+                              f"fair={fair:.4f} TTL={ttl}")
             elif debug:
                 print(f"[{fmt_now()}] {bar_ts} TTL={ttl} skip (no features/strike/market)")
 
-        # --- Poll PM order book (collect remaining snapshots for pending alert) ---
-        if market and pending and pending["remaining"] > 0:
-            pm_snap = fetch_prices(market["token_ids"])
-            if pm_snap:
-                pending["snapshots"].append(pm_snap)
-                pending["remaining"] -= 1
-                if pending["remaining"] == 0:
-                    msg = format_signal_alert(
-                        pending["prob"], pending["ttl"],
-                        pending["strike"], pending["close"],
-                        market, pending["snapshots"],
+        # --- Drive active jobs ---
+        if not market:
+            continue
+        cur = now_ms()
+        for job in jobs:
+            if job.summary_sent:
+                continue
+
+            # Post-trigger: 10 polls at 3s intervals
+            if not job.post_trigger_done and cur >= job.next_poll_at_ms:
+                snap = _safe_fetch(market["token_ids"])
+                if snap:
+                    tok = _extract_token(snap, job.target_idx)
+                    tok["delta"] = (
+                        (tok["ask"] - job.fair) if tok.get("ask") is not None else None
                     )
-                    send_discord(msg, env_key=webhook_key)
-                    pending = None
+                    job.polls.append(tok)
+                job.post_trigger_attempted += 1
+                job.next_poll_at_ms = cur + POLL_INTERVAL_MS
+                if job.post_trigger_attempted >= ALERT_POLL_COUNT:
+                    job.post_trigger_done = True
+
+            # Near-close: T-2s, retry once at T-1s, capture both tokens
+            if (job.post_trigger_done
+                    and job.near_close_snapshot is None
+                    and job.near_close_attempted < 2
+                    and cur >= job.near_close_next_ms):
+                snap = _safe_fetch(market["token_ids"])
+                job.near_close_attempted += 1
+                if snap:
+                    tokens = [_extract_token(snap, i)
+                              for i in range(len(snap.get("tokens", [])))]
+                    job.near_close_snapshot = {"ts_ms": snap["ts_ms"], "tokens": tokens}
+                else:
+                    retry_at = job.window_end_ms - NEAR_CLOSE_RETRY_MS
+                    if job.near_close_attempted < 2 and cur < retry_at:
+                        job.near_close_next_ms = retry_at
 
     kline.stop()
     print(f"[{fmt_now()}] Stream stopped.")
