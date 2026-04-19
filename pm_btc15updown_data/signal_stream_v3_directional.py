@@ -194,13 +194,15 @@ class TriggerJob:
     target_idx: int             # 0 | 1
     market_slug: str
     market_title: str
+    outcomes: list[str] = field(default_factory=list)   # market outcome labels
 
     polls: list[dict] = field(default_factory=list)
     post_trigger_attempted: int = 0
     next_poll_at_ms: int = 0
     post_trigger_done: bool = False
 
-    near_close_poll: dict | None = None
+    # near_close_snapshot: {"ts_ms": int, "tokens": [tok0, tok1]} with all outcomes
+    near_close_snapshot: dict | None = None
     near_close_attempted: int = 0
     near_close_next_ms: int = 0
 
@@ -283,20 +285,43 @@ def _format_summary(job: TriggerJob, settlement: float) -> str:
         )
     else:
         lines.append("**No post-trigger polls captured a valid ask.**")
-    if job.near_close_poll and job.near_close_poll.get("ask") is not None:
+    if job.near_close_snapshot:
         nc_ts = datetime.fromtimestamp(
-            job.near_close_poll["ts_ms"] / 1000, tz=timezone.utc
+            job.near_close_snapshot["ts_ms"] / 1000, tz=timezone.utc
         ).strftime("%H:%M:%S")
-        lines.append(
-            f"Near-close ask: `{job.near_close_poll['ask']:.4f}` @ {nc_ts}"
-        )
+        lines.append(f"Near-close @ {nc_ts}:")
+        outs = job.outcomes or ["t0", "t1"]
+        for i, tok in enumerate(job.near_close_snapshot["tokens"]):
+            label = outs[i] if i < len(outs) else f"t{i}"
+            ask = tok.get("ask")
+            bid = tok.get("bid")
+            ask_s = f"{ask:.4f}" if ask is not None else "-"
+            bid_s = f"{bid:.4f}" if bid is not None else "-"
+            marker = "  <- target" if i == job.target_idx else ""
+            lines.append(f"  {label:4s}: ask=`{ask_s}`  bid=`{bid_s}`{marker}")
     else:
-        lines.append("Near-close ask: (no snapshot)")
+        lines.append("Near-close: (no snapshot)")
     return "\n".join(lines)
 
 
 def _summary_payload(job: TriggerJob) -> dict:
     asks = [p["ask"] for p in job.polls if p.get("ask") is not None]
+    near_close = None
+    if job.near_close_snapshot:
+        outs = job.outcomes or []
+        near_close = {
+            "ts_ms": job.near_close_snapshot["ts_ms"],
+            "tokens": [
+                {
+                    "outcome": (outs[i] if i < len(outs) else f"t{i}"),
+                    "ask": tok.get("ask"),
+                    "bid": tok.get("bid"),
+                    "ask_size": tok.get("ask_size"),
+                    "bid_size": tok.get("bid_size"),
+                }
+                for i, tok in enumerate(job.near_close_snapshot["tokens"])
+            ],
+        }
     return {
         "window_start_ms": job.window_start_ms,
         "ttl": job.ttl_at_trigger,
@@ -309,8 +334,7 @@ def _summary_payload(job: TriggerJob) -> dict:
         "ask_min": round(min(asks), 6) if asks else None,
         "ask_max": round(max(asks), 6) if asks else None,
         "ask_avg": round(sum(asks) / len(asks), 6) if asks else None,
-        "near_close_ask": job.near_close_poll["ask"] if job.near_close_poll else None,
-        "near_close_ts_ms": job.near_close_poll["ts_ms"] if job.near_close_poll else None,
+        "near_close": near_close,
     }
 
 
@@ -393,17 +417,22 @@ def run_stream(
                 for job in jobs:
                     if job.window_start_ms != closing_win or job.summary_sent:
                         continue
-                    # Last-chance near-close poll
-                    if job.near_close_poll is None:
+                    # Last-chance near-close poll (capture all outcomes)
+                    if job.near_close_snapshot is None:
                         snap = _safe_fetch(market["token_ids"])
                         if snap:
-                            tok = _extract_token(snap, job.target_idx)
-                            if tok.get("ask") is not None:
-                                job.near_close_poll = tok
-                                logger.write(
-                                    "poll", trigger_key=job.key,
-                                    kind="near_close_fallback", **tok,
-                                )
+                            tokens = [
+                                _extract_token(snap, i)
+                                for i in range(len(snap.get("tokens", [])))
+                            ]
+                            job.near_close_snapshot = {
+                                "ts_ms": snap["ts_ms"], "tokens": tokens,
+                            }
+                            logger.write(
+                                "poll", trigger_key=job.key,
+                                kind="near_close_fallback",
+                                ts_ms=snap["ts_ms"], tokens=tokens,
+                            )
                     msg = _format_summary(job, settlement)
                     ok = send_discord(msg, env_key=webhook_key)
                     logger.write(
@@ -465,6 +494,7 @@ def run_stream(
                     target_idx=target_idx,
                     market_slug=market.get("slug", ""),
                     market_title=market.get("title", ""),
+                    outcomes=list(market.get("outcomes") or ["YES", "NO"]),
                     next_poll_at_ms=now_ms(),
                     near_close_next_ms=win_end - NEAR_CLOSE_OFFSET_MS,
                 )
@@ -504,22 +534,25 @@ def run_stream(
                 if job.post_trigger_attempted >= POLL_COUNT:
                     job.post_trigger_done = True
 
-            # Near-close: T-2s, retry once at T-1s
+            # Near-close: T-2s, retry once at T-1s (capture all outcomes)
             if job.post_trigger_done \
-               and job.near_close_poll is None \
+               and job.near_close_snapshot is None \
                and job.near_close_attempted < 2 \
                and cur >= job.near_close_next_ms:
                 snap = _safe_fetch(market["token_ids"])
                 job.near_close_attempted += 1
-                captured = False
                 if snap:
-                    tok = _extract_token(snap, job.target_idx)
-                    if tok.get("ask") is not None:
-                        job.near_close_poll = tok
-                        logger.write("poll", trigger_key=job.key,
-                                     kind="near_close", **tok)
-                        captured = True
-                if not captured:
+                    tokens = [
+                        _extract_token(snap, i)
+                        for i in range(len(snap.get("tokens", [])))
+                    ]
+                    job.near_close_snapshot = {
+                        "ts_ms": snap["ts_ms"], "tokens": tokens,
+                    }
+                    logger.write("poll", trigger_key=job.key,
+                                 kind="near_close",
+                                 ts_ms=snap["ts_ms"], tokens=tokens)
+                else:
                     retry_at = job.window_end_ms - NEAR_CLOSE_RETRY_MS
                     if job.near_close_attempted < 2 and cur < retry_at:
                         job.near_close_next_ms = retry_at
