@@ -255,6 +255,7 @@ def _extract_token(snap: dict, idx: int) -> dict:
         "ts_ms": snap["ts_ms"],
         "ask": _f(tok.get("ask")),
         "bid": _f(tok.get("bid")),
+        "mid": _f(tok.get("mid")),
         "ask_size": tok.get("ask_size"),
         "bid_size": tok.get("bid_size"),
     }
@@ -354,15 +355,17 @@ def format_contrarian_summary(
     # Per-poll table
     if job.polls:
         lines.append("```")
-        lines.append(f"  {'time':8s}  {'ask':6s}  {'delta':7s}")
+        lines.append(f"  {'time':8s}  {'ask':6s}  {'bid':6s}  {'mid':6s}  {'delta':7s}")
         for p in job.polls:
             ts_str = datetime.fromtimestamp(
                 p["ts_ms"] / 1000, tz=timezone.utc
             ).strftime("%H:%M:%S")
             ask_s = f"{p['ask']:.4f}" if p.get("ask") is not None else "  -   "
+            bid_s = f"{p['bid']:.4f}" if p.get("bid") is not None else "  -   "
+            mid_s = f"{p['mid']:.4f}" if p.get("mid") is not None else "  -   "
             delta_s = f"{p['delta']:+.4f}" if p.get("delta") is not None else "   -   "
             entry = " *" if (p.get("delta") or 0) > DELTA_ENTRY_THRESHOLD else ""
-            lines.append(f"  {ts_str}  {ask_s}  {delta_s}{entry}")
+            lines.append(f"  {ts_str}  {ask_s}  {bid_s}  {mid_s}  {delta_s}{entry}")
         lines.append("```")
 
     # Near-close both tokens
@@ -373,12 +376,13 @@ def format_contrarian_summary(
         lines.append(f"Near-close @ {nc_ts}:")
         for i, tok in enumerate(job.near_close_snapshot["tokens"]):
             label = outs[i] if i < len(outs) else f"t{i}"
-            ask = tok.get("ask")
-            bid = tok.get("bid")
-            ask_s = f"{ask:.4f}" if ask is not None else "-"
-            bid_s = f"{bid:.4f}" if bid is not None else "-"
+            ask_s = f"{tok['ask']:.4f}" if tok.get("ask") is not None else "-"
+            bid_s = f"{tok['bid']:.4f}" if tok.get("bid") is not None else "-"
+            mid_s = f"{tok['mid']:.4f}" if tok.get("mid") is not None else "-"
             marker = "  <- target" if i == job.target_idx else ""
-            lines.append(f"  {label:4s}: ask=`{ask_s}`  bid=`{bid_s}`{marker}")
+            lines.append(
+                f"  {label:4s}: ask=`{ask_s}`  bid=`{bid_s}`  mid=`{mid_s}`{marker}"
+            )
     else:
         lines.append("Near-close: (no snapshot)")
 
@@ -607,7 +611,7 @@ def run_stream(
                 if snap:
                     tok = _extract_token(snap, job.target_idx)
                     tok["delta"] = (
-                        (tok["ask"] - job.fair) if tok.get("ask") is not None else None
+                        (tok["mid"] - job.fair) if tok.get("mid") is not None else None
                     )
                     job.polls.append(tok)
                 job.post_trigger_attempted += 1
