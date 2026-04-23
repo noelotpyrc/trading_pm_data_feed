@@ -292,7 +292,10 @@ class ContrarianJob:
 
     @property
     def real_entry_count(self) -> int:
-        return sum(1 for p in self.polls if (p.get("delta") or 0) > DELTA_ENTRY_THRESHOLD)
+        return sum(
+            1 for p in self.polls
+            if p.get("mid", 0) > 0 and (p.get("delta") or 0) > DELTA_ENTRY_THRESHOLD
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -341,8 +344,9 @@ def format_contrarian_summary(
         "",
     ]
 
-    # Delta stats over 10 polls
-    deltas = [p["delta"] for p in job.polls if p.get("delta") is not None]
+    # Delta stats over 10 polls (exclude mid=0, illiquid)
+    deltas = [p["delta"] for p in job.polls
+              if p.get("delta") is not None and p.get("mid", 0) > 0]
     if deltas:
         lines.append(
             f"Real entries: **{job.real_entry_count}/{len(job.polls)}** "

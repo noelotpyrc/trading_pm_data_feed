@@ -63,10 +63,11 @@ from pm_btc15updown_data.signal_stream_v3 import (
 
 KLINE_WS = "wss://fstream.binance.com/ws/btcusdt@kline_1m"
 LOOP_TIMEOUT_S = 1.0
-POLL_INTERVAL_MS = 3_000
+POLL_INTERVAL_MS = 3_000          # phase-1: 8 polls at 3s
 POLL_COUNT = 8
-NEAR_CLOSE_OFFSET_MS = 2_000   # first near-close attempt at T-2s
-NEAR_CLOSE_RETRY_MS = 1_000    # retry at T-1s
+EXTENDED_POLL_INTERVAL_MS = 10_000  # phase-2: every 10s until near-close
+NEAR_CLOSE_OFFSET_MS = 2_000      # first near-close attempt at T-2s
+NEAR_CLOSE_RETRY_MS = 1_000       # retry at T-1s
 GROUP_MINUTES = 15
 WINDOW_MS = GROUP_MINUTES * 60 * 1000
 
@@ -196,10 +197,13 @@ class TriggerJob:
     market_title: str
     outcomes: list[str] = field(default_factory=list)   # market outcome labels
 
-    polls: list[dict] = field(default_factory=list)
+    polls: list[dict] = field(default_factory=list)       # phase-1: 8 × 3s
     post_trigger_attempted: int = 0
     next_poll_at_ms: int = 0
     post_trigger_done: bool = False
+
+    extended_polls: list[dict] = field(default_factory=list)  # phase-2: 10s until near-close
+    extended_next_poll_at_ms: int = 0
 
     # near_close_snapshot: {"ts_ms": int, "tokens": [tok0, tok1]} with all outcomes
     near_close_snapshot: dict | None = None
@@ -255,8 +259,17 @@ def _resolve_target_idx(market: dict, target: str) -> int:
     return 0 if target == "YES" else 1
 
 
+def _valid_asks(polls: list[dict]) -> list[float]:
+    """Asks from polls excluding None and 0 (0 = illiquid/no offer)."""
+    return [p["ask"] for p in polls if p.get("ask") is not None and p["ask"] > 0]
+
+
+def _ask_stats(asks: list[float]) -> str:
+    return (f"min=`{min(asks):.4f}`  max=`{max(asks):.4f}`  "
+            f"avg=`{sum(asks)/len(asks):.4f}`")
+
+
 def _format_summary(job: TriggerJob, settlement: float) -> str:
-    asks = [p["ask"] for p in job.polls if p.get("ask") is not None]
     window_close_utc = datetime.fromtimestamp(
         job.window_end_ms / 1000, tz=timezone.utc
     ).strftime("%Y-%m-%d %H:%M UTC")
@@ -277,14 +290,29 @@ def _format_summary(job: TriggerJob, settlement: float) -> str:
         f"Settle=`{settlement:.1f}` ({delta_pct:+.2f}%) -> {settle_outcome} {hit}",
         "",
     ]
-    if asks:
+
+    # Phase-1: 8 polls at 3s
+    p1 = _valid_asks(job.polls)
+    if p1:
         lines.append(
-            f"**{job.target_outcome} ask** over {len(asks)} polls: "
-            f"min=`{min(asks):.4f}`  max=`{max(asks):.4f}`  "
-            f"avg=`{sum(asks)/len(asks):.4f}`"
+            f"**{job.target_outcome} ask** {len(job.polls)} polls ×3s: {_ask_stats(p1)}"
         )
     else:
-        lines.append("**No post-trigger polls captured a valid ask.**")
+        lines.append(f"**{job.target_outcome} ask** 3s polls: no valid ask captured")
+
+    # Phase-2: extended 10s polls
+    p2 = _valid_asks(job.extended_polls)
+    if job.extended_polls:
+        if p2:
+            lines.append(
+                f"**{job.target_outcome} ask** {len(job.extended_polls)} polls ×10s: {_ask_stats(p2)}"
+            )
+        else:
+            lines.append(
+                f"**{job.target_outcome} ask** {len(job.extended_polls)} polls ×10s: no valid ask"
+            )
+
+    # Near-close both outcomes
     if job.near_close_snapshot:
         nc_ts = datetime.fromtimestamp(
             job.near_close_snapshot["ts_ms"] / 1000, tz=timezone.utc
@@ -293,10 +321,8 @@ def _format_summary(job: TriggerJob, settlement: float) -> str:
         outs = job.outcomes or ["t0", "t1"]
         for i, tok in enumerate(job.near_close_snapshot["tokens"]):
             label = outs[i] if i < len(outs) else f"t{i}"
-            ask = tok.get("ask")
-            bid = tok.get("bid")
-            ask_s = f"{ask:.4f}" if ask is not None else "-"
-            bid_s = f"{bid:.4f}" if bid is not None else "-"
+            ask_s = f"{tok['ask']:.4f}" if tok.get("ask") is not None else "-"
+            bid_s = f"{tok['bid']:.4f}" if tok.get("bid") is not None else "-"
             marker = "  <- target" if i == job.target_idx else ""
             lines.append(f"  {label:4s}: ask=`{ask_s}`  bid=`{bid_s}`{marker}")
     else:
@@ -305,7 +331,8 @@ def _format_summary(job: TriggerJob, settlement: float) -> str:
 
 
 def _summary_payload(job: TriggerJob) -> dict:
-    asks = [p["ask"] for p in job.polls if p.get("ask") is not None]
+    p1 = _valid_asks(job.polls)
+    p2 = _valid_asks(job.extended_polls)
     near_close = None
     if job.near_close_snapshot:
         outs = job.outcomes or []
@@ -329,11 +356,18 @@ def _summary_payload(job: TriggerJob) -> dict:
         "target": job.target_outcome,
         "strike": job.strike,
         "btc_close_trigger": job.btc_close,
-        "n_polls_total": len(job.polls),
-        "n_polls_valid_ask": len(asks),
-        "ask_min": round(min(asks), 6) if asks else None,
-        "ask_max": round(max(asks), 6) if asks else None,
-        "ask_avg": round(sum(asks) / len(asks), 6) if asks else None,
+        # phase-1 (3s polls)
+        "n_polls": len(job.polls),
+        "n_polls_valid_ask": len(p1),
+        "ask_min": round(min(p1), 6) if p1 else None,
+        "ask_max": round(max(p1), 6) if p1 else None,
+        "ask_avg": round(sum(p1) / len(p1), 6) if p1 else None,
+        # phase-2 (10s extended polls)
+        "n_extended_polls": len(job.extended_polls),
+        "n_extended_valid_ask": len(p2),
+        "ext_ask_min": round(min(p2), 6) if p2 else None,
+        "ext_ask_max": round(max(p2), 6) if p2 else None,
+        "ext_ask_avg": round(sum(p2) / len(p2), 6) if p2 else None,
         "near_close": near_close,
     }
 
@@ -521,7 +555,7 @@ def run_stream(
             if job.summary_sent:
                 continue
 
-            # Post-trigger: 8 polls at 3s intervals
+            # Phase-1: 8 polls at 3s
             if not job.post_trigger_done and cur >= job.next_poll_at_ms:
                 snap = _safe_fetch(market["token_ids"])
                 if snap:
@@ -533,6 +567,19 @@ def run_stream(
                 job.next_poll_at_ms = cur + POLL_INTERVAL_MS
                 if job.post_trigger_attempted >= POLL_COUNT:
                     job.post_trigger_done = True
+                    job.extended_next_poll_at_ms = cur + EXTENDED_POLL_INTERVAL_MS
+
+            # Phase-2: 10s polls until near-close window
+            if (job.post_trigger_done
+                    and cur >= job.extended_next_poll_at_ms
+                    and cur < job.near_close_next_ms):
+                snap = _safe_fetch(market["token_ids"])
+                if snap:
+                    tok = _extract_token(snap, job.target_idx)
+                    job.extended_polls.append(tok)
+                    logger.write("poll", trigger_key=job.key,
+                                 kind="extended", **tok)
+                job.extended_next_poll_at_ms = cur + EXTENDED_POLL_INTERVAL_MS
 
             # Near-close: T-2s, retry once at T-1s (capture all outcomes)
             if job.post_trigger_done \
