@@ -37,16 +37,15 @@ from btcusdt_perp_signal.alert import send_discord
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE = "https://clob.polymarket.com"
+DATA_API_BASE = "https://data-api.polymarket.com"
 EPOCH_S = 900  # 15 minutes
 ALERT_DELTA_FLOOR = 0.05  # minimum absolute delta to trigger alert
 
-BINANCE_WS_BOOK = "wss://fstream.binance.com/ws/btcusdt@bookTicker"
-BINANCE_WS_LIQ = "wss://fstream.binance.com/ws/btcusdt@forceOrder"
 BINANCE_WS_DEPTH = "wss://fstream.binance.com/ws/btcusdt@depth20@500ms"
 BINANCE_FAPI = "https://fapi.binance.com"
-BTC_HISTORY_SIZE = 30  # ~30s of ticks to keep
-LIQ_HISTORY_SIZE = 60  # ~60s of liquidation events
 DEPTH_HISTORY_SIZE = 30  # ~30s at 1/sec sampling
+TRADE_HISTORY_SIZE = 2000  # plenty of headroom for many minutes
+TRADE_POLL_INTERVAL_S = 3.0
 
 _shutdown = False
 
@@ -55,130 +54,6 @@ def _handle_signal(sig, _frame):
     global _shutdown
     print(f"\n[{fmt_now()}] Caught {signal.Signals(sig).name}, shutting down...")
     _shutdown = True
-
-
-class BtcPriceFeed:
-    """Background thread that streams BTCUSDT best bid/ask from Binance."""
-
-    def __init__(self, maxlen: int = BTC_HISTORY_SIZE):
-        self.history: deque = deque(maxlen=maxlen)
-        self._thread: threading.Thread | None = None
-        self._ws = None
-        self._last_store_s: float = 0
-
-    def start(self):
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        if self._ws:
-            try:
-                self._ws.close()
-            except Exception:
-                pass
-
-    def get_recent(self) -> list[dict]:
-        """Return a copy of recent BTC price snapshots."""
-        return list(self.history)
-
-    def _run(self):
-        delay = 5
-        while not _shutdown:
-            try:
-                print(f"[{fmt_now()}] BTC feed: connecting to {BINANCE_WS_BOOK}")
-                self._ws = ws_client.create_connection(BINANCE_WS_BOOK, timeout=10)
-                print(f"[{fmt_now()}] BTC feed: connected")
-                delay = 5
-                while not _shutdown:
-                    try:
-                        raw = self._ws.recv()
-                    except ws_client.WebSocketTimeoutException:
-                        continue
-                    data = json.loads(raw)
-                    now_s = time.time()
-                    # Only store one snapshot per second
-                    if now_s - self._last_store_s >= 1.0:
-                        self.history.append({
-                            "ts_ms": data.get("E", int(now_s * 1000)),
-                            "bid": data.get("b"),
-                            "bid_size": data.get("B"),
-                            "ask": data.get("a"),
-                            "ask_size": data.get("A"),
-                        })
-                        self._last_store_s = now_s
-            except Exception as e:
-                if not _shutdown:
-                    print(f"[{fmt_now()}] BTC feed: {e}. Reconnecting in {delay}s...")
-            finally:
-                if self._ws:
-                    try:
-                        self._ws.close()
-                    except Exception:
-                        pass
-            if not _shutdown:
-                time.sleep(delay)
-                delay = min(delay * 2, 60)
-
-
-class LiquidationFeed:
-    """Background thread that streams BTCUSDT liquidations from Binance."""
-
-    def __init__(self, maxlen: int = LIQ_HISTORY_SIZE):
-        self.history: deque = deque(maxlen=maxlen)
-        self._thread: threading.Thread | None = None
-        self._ws = None
-
-    def start(self):
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        if self._ws:
-            try:
-                self._ws.close()
-            except Exception:
-                pass
-
-    def get_recent(self, window_s: float = 60.0) -> list[dict]:
-        """Return liquidation events from the last window_s seconds."""
-        cutoff = int((time.time() - window_s) * 1000)
-        return [e for e in self.history if e["ts_ms"] >= cutoff]
-
-    def _run(self):
-        delay = 5
-        while not _shutdown:
-            try:
-                print(f"[{fmt_now()}] Liq feed: connecting to {BINANCE_WS_LIQ}")
-                self._ws = ws_client.create_connection(BINANCE_WS_LIQ, timeout=10)
-                print(f"[{fmt_now()}] Liq feed: connected")
-                delay = 5
-                while not _shutdown:
-                    try:
-                        raw = self._ws.recv()
-                    except ws_client.WebSocketTimeoutException:
-                        continue
-                    data = json.loads(raw)
-                    o = data.get("o", {})
-                    self.history.append({
-                        "ts_ms": data.get("E", int(time.time() * 1000)),
-                        "side": o.get("S"),
-                        "qty": o.get("q"),
-                        "price": o.get("p"),
-                        "avg_price": o.get("ap"),
-                        "status": o.get("X"),
-                    })
-            except Exception as e:
-                if not _shutdown:
-                    print(f"[{fmt_now()}] Liq feed: {e}. Reconnecting in {delay}s...")
-            finally:
-                if self._ws:
-                    try:
-                        self._ws.close()
-                    except Exception:
-                        pass
-            if not _shutdown:
-                time.sleep(delay)
-                delay = min(delay * 2, 60)
 
 
 class DepthFeed:
@@ -243,6 +118,99 @@ class DepthFeed:
             if not _shutdown:
                 time.sleep(delay)
                 delay = min(delay * 2, 60)
+
+
+class TradeFeed:
+    """Background thread that polls Polymarket trade history for the active market."""
+
+    def __init__(self, maxlen: int = TRADE_HISTORY_SIZE):
+        self.trades: deque = deque(maxlen=maxlen)
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._condition_id: str | None = None
+        self._yes_token_id: str | None = None
+        self._seen_hashes: set = set()
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        pass  # daemon thread, exits with main
+
+    def set_market(self, condition_id: str | None, yes_token_id: str | None):
+        """Update the active market. Clears buffer on change."""
+        with self._lock:
+            if condition_id != self._condition_id:
+                self._condition_id = condition_id
+                self._yes_token_id = yes_token_id
+                self.trades.clear()
+                self._seen_hashes.clear()
+                if condition_id:
+                    print(f"[{fmt_now()}] Trade feed: now tracking {condition_id[:20]}...")
+
+    def get_between(self, start_ms: int, end_ms: int) -> list[dict]:
+        """Return trades with timestamps within [start_ms, end_ms]."""
+        start_s = start_ms / 1000
+        end_s = end_ms / 1000
+        with self._lock:
+            return [t for t in self.trades if start_s <= t["ts"] <= end_s]
+
+    def _run(self):
+        delay = TRADE_POLL_INTERVAL_S
+        while not _shutdown:
+            time.sleep(TRADE_POLL_INTERVAL_S)
+            with self._lock:
+                cid = self._condition_id
+                yes_tid = self._yes_token_id
+            if not cid:
+                continue
+            try:
+                url = f"{DATA_API_BASE}/trades?market={cid}&limit=500"
+                req = urllib.request.Request(url, headers={"User-Agent": "pm-collector/1.0"})
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    raw = json.loads(r.read())
+                with self._lock:
+                    if cid != self._condition_id:
+                        continue  # market changed during fetch
+                    new_count = 0
+                    for t in raw:
+                        h = t.get("transactionHash")
+                        if not h or h in self._seen_hashes:
+                            continue
+                        self._seen_hashes.add(h)
+                        token = "YES" if t.get("asset") == yes_tid else "NO"
+                        self.trades.append({
+                            "ts": t.get("timestamp"),
+                            "token": token,
+                            "side": t.get("side"),  # BUY or SELL
+                            "size": float(t.get("size", 0)),
+                            "price": float(t.get("price", 0)),
+                            "hash": h,
+                        })
+                        new_count += 1
+                    # Keep _seen_hashes from growing unbounded
+                    if len(self._seen_hashes) > 5000:
+                        self._seen_hashes = {t["hash"] for t in self.trades}
+            except Exception as e:
+                if not _shutdown:
+                    print(f"[{fmt_now()}] Trade feed error: {e}")
+
+
+def compute_trade_stats(trades: list[dict]) -> dict:
+    """Aggregate a slice of trades."""
+    stats = {
+        "count": len(trades),
+        "notional": 0.0,
+        "yes_buy": 0.0, "yes_sell": 0.0,
+        "no_buy": 0.0, "no_sell": 0.0,
+    }
+    for t in trades:
+        stats["notional"] += t["size"] * t["price"]
+        key = f"{t['token'].lower()}_{t['side'].lower()}"
+        if key in stats:
+            stats[key] += t["size"]
+    return stats
 
 
 def compute_depth_stats(snap: dict, strike: float | None = None) -> dict:
@@ -373,6 +341,7 @@ def resolve_market(epoch_ts: int) -> dict | None:
         "title": event.get("title", ""),
         "outcomes": outcomes,
         "token_ids": token_ids,
+        "condition_id": m.get("conditionId"),
     }
 
 
@@ -426,9 +395,9 @@ def append_event(base: Path, event: dict) -> Path:
 def format_alert(
     market_title: str, outcomes: list, deltas: list[dict],
     curr: dict, history: deque,
-    liq_events: list[dict] | None = None,
     depth_stats: list[dict] | None = None,
     strike: str | None = None,
+    trade_stats: dict | None = None,
 ) -> str:
     lines = [f"\U0001f4c8 **PM BTC 15m Up/Down Price Alert**"]
     lines.append(f"{market_title} | Strike: `{strike or '?'}`")
@@ -447,16 +416,17 @@ def format_alert(
         up_t = snap["tokens"][0]
         lines.append(f"  {ts_str}  mid={up_t['mid']}  bid={up_t['bid']}({up_t['bid_size']}) ask={up_t['ask']}({up_t['ask_size']})")
     lines.append("```")
-    # Liquidation events (60s)
-    total_qty = sum(float(liq.get("qty", 0)) for liq in liq_events) if liq_events else 0
-    lines.append("")
-    lines.append(f"**BTCUSDT liquidations (60s): {len(liq_events or [])} events, total qty: {total_qty:.3f} BTC**")
-    if liq_events:
-        lines.append("```")
-        for liq in liq_events:
-            ts_str = datetime.fromtimestamp(liq["ts_ms"] / 1000, tz=timezone.utc).strftime("%H:%M:%S")
-            lines.append(f"  {ts_str}  {liq['side']} qty={liq['qty']} price={liq['price']} avg={liq['avg_price']}")
-        lines.append("```")
+    # PM trades during the price move window
+    if trade_stats is not None:
+        lines.append("")
+        lines.append(
+            f"**PM trades during move ({trade_stats['window_s']}s):** "
+            f"{trade_stats['count']} trades, ${trade_stats['notional']:.2f}"
+        )
+        lines.append(
+            f"  YES: BUY `{trade_stats['yes_buy']:.2f}` SELL `{trade_stats['yes_sell']:.2f}` | "
+            f"NO: BUY `{trade_stats['no_buy']:.2f}` SELL `{trade_stats['no_sell']:.2f}`"
+        )
     # Unified book section (30s, 10 snapshots — price + depth + structure)
     if depth_stats:
         lines.append("")
@@ -481,8 +451,8 @@ def collect(
     log_base: Path,
     poll_interval: float,
     threshold: float,
-    liq_feed: LiquidationFeed | None = None,
     depth_feed: DepthFeed | None = None,
+    trade_feed: TradeFeed | None = None,
 ) -> None:
     prev_snapshot: dict | None = None
     prev_epoch_ts: int | None = None
@@ -506,6 +476,11 @@ def collect(
                     print(f"[{fmt_now()}] Strike: {strike}")
                 prev_snapshot = None  # reset delta tracking on new epoch
                 history.clear()
+                if trade_feed:
+                    trade_feed.set_market(
+                        market_info.get("condition_id"),
+                        market_info["token_ids"][0] if market_info.get("token_ids") else None,
+                    )
             else:
                 print(f"[{fmt_now()}] No market found for epoch {epoch_ts}, retrying...")
                 time.sleep(poll_interval)
@@ -542,45 +517,69 @@ def collect(
 
         history.append(snapshot)
 
-        # Check delta on Up token (index 0) ask price
+        # Check positive delta on YES (idx 0) and NO (idx 1) ask prices
         if prev_snapshot is not None:
-            up_idx = 0
-            prev_ask = float(prev_snapshot["tokens"][up_idx]["ask"])
-            curr_ask = float(snapshot["tokens"][up_idx]["ask"])
-
-            # Skip delta calc if either price is missing/zero
-            if prev_ask > 0 and curr_ask > 0:
+            deltas = []
+            for idx in range(min(2, len(snapshot["tokens"]), len(prev_snapshot["tokens"]))):
+                prev_ask = float(prev_snapshot["tokens"][idx]["ask"])
+                curr_ask = float(snapshot["tokens"][idx]["ask"])
+                if prev_ask <= 0 or curr_ask <= 0:
+                    continue
                 delta = curr_ask - prev_ask
                 pct = delta / prev_ask * 100
-                outcome = market_info["outcomes"][up_idx] if up_idx < len(market_info["outcomes"]) else "Up"
+                # Only trigger on POSITIVE movement
+                # Fire if (delta >= floor AND pct >= threshold) OR pct >= 30%
+                fires = (
+                    (delta >= ALERT_DELTA_FLOOR and pct >= threshold * 100)
+                    or pct >= 30.0
+                )
+                if not fires:
+                    continue
+                outcome = (
+                    market_info["outcomes"][idx]
+                    if idx < len(market_info["outcomes"]) else f"token_{idx}"
+                )
+                deltas.append({
+                    "outcome": outcome,
+                    "prev_mid": f"{prev_ask:.4f}",
+                    "curr_mid": f"{curr_ask:.4f}",
+                    "delta": delta,
+                    "pct": pct,
+                })
 
-                if abs(pct) >= threshold * 100 and abs(delta) >= ALERT_DELTA_FLOOR:
-                    deltas = [{
-                        "outcome": outcome,
-                        "prev_mid": f"{prev_ask:.4f}",
-                        "curr_mid": f"{curr_ask:.4f}",
-                        "delta": delta,
-                        "pct": pct,
-                    }]
-                    liq_events = liq_feed.get_recent(60.0) if liq_feed else []
-                    # Depth stats: 10 snapshots from 30s buffer
-                    depth_stats = None
-                    if depth_feed:
-                        raw_depth = depth_feed.get_recent(30.0)
-                        if raw_depth:
-                            strike_f = float(strike) if strike else None
-                            step = max(1, (len(raw_depth) - 1) // 5)
-                            sampled = raw_depth[::step][:5]
-                            if raw_depth[-1] not in sampled:
-                                sampled.append(raw_depth[-1])
-                            depth_stats = [compute_depth_stats(s, strike_f) for s in sampled]
-                    msg = format_alert(
-                        market_info["title"], market_info["outcomes"],
-                        deltas, snapshot, history, liq_events,
-                        depth_stats, strike,
+            if deltas:
+                # Depth stats: 6 snapshots from 30s buffer
+                depth_stats = None
+                if depth_feed:
+                    raw_depth = depth_feed.get_recent(30.0)
+                    if raw_depth:
+                        strike_f = float(strike) if strike else None
+                        step = max(1, (len(raw_depth) - 1) // 5)
+                        sampled = raw_depth[::step][:5]
+                        if raw_depth[-1] not in sampled:
+                            sampled.append(raw_depth[-1])
+                        depth_stats = [compute_depth_stats(s, strike_f) for s in sampled]
+                # Trade stats during the move window
+                trade_stats = None
+                if trade_feed:
+                    slice_trades = trade_feed.get_between(
+                        prev_snapshot["ts_ms"], snapshot["ts_ms"]
                     )
-                    print(f"[{fmt_now()}] ALERT: Up ask {prev_ask} → {curr_ask} ({pct:+.1f}%)")
-                    send_discord(msg, env_key="DISCORD_WEBHOOK_URL_PM")
+                    trade_stats = compute_trade_stats(slice_trades)
+                    trade_stats["window_s"] = round(
+                        (snapshot["ts_ms"] - prev_snapshot["ts_ms"]) / 1000, 1
+                    )
+                msg = format_alert(
+                    market_info["title"], market_info["outcomes"],
+                    deltas, snapshot, history,
+                    depth_stats, strike, trade_stats,
+                )
+                summary = ", ".join(
+                    f"{d['outcome']} {d['prev_mid']}→{d['curr_mid']} ({d['pct']:+.1f}%)"
+                    for d in deltas
+                )
+                print(f"[{fmt_now()}] ALERT: {summary}")
+                send_discord(msg, env_key="DISCORD_WEBHOOK_URL_PM")
 
         prev_snapshot = snapshot
         time.sleep(poll_interval)
@@ -611,15 +610,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    liq_feed = LiquidationFeed()
     depth_feed = DepthFeed()
-    liq_feed.start()
+    trade_feed = TradeFeed()
     depth_feed.start()
+    trade_feed.start()
 
-    collect(log_base, args.poll_interval, args.threshold, liq_feed, depth_feed)
+    collect(log_base, args.poll_interval, args.threshold, depth_feed, trade_feed)
 
-    liq_feed.stop()
     depth_feed.stop()
+    trade_feed.stop()
     print(f"[{fmt_now()}] Collector stopped.")
     return 0
 
