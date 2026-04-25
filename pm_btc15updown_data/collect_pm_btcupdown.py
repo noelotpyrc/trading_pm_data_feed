@@ -380,6 +380,11 @@ def fetch_prices(token_ids: list[str]) -> dict | None:
             ask_p = float(best_ask["price"])
             mid = (bid_p + ask_p) / 2 if bid_p > 0 and ask_p > 0 else 0
 
+            # Full ask ladder, sorted ascending (lowest price first)
+            ask_ladder = sorted(
+                ([float(a["price"]), float(a["size"])] for a in asks),
+                key=lambda x: x[0],
+            )
             snapshot["tokens"].append({
                 "token_id": tid,
                 "mid": f"{mid:.4f}",
@@ -387,12 +392,29 @@ def fetch_prices(token_ids: list[str]) -> dict | None:
                 "bid_size": best_bid["size"],
                 "ask": best_ask["price"],
                 "ask_size": best_ask["size"],
+                "ask_ladder": ask_ladder,  # [[price, size], ...] sorted asc by price
             })
         except Exception as e:
             print(f"[{fmt_now()}] CLOB book error for {tid[:20]}...: {e}")
             return None
 
     return snapshot
+
+
+def compute_liq_to_price(
+    ask_ladder: list, snap_ask: float, target_ask: float,
+) -> tuple[float, float]:
+    """Sum size and size-weighted avg price for asks in [snap_ask, target_ask]."""
+    if not ask_ladder or target_ask < snap_ask:
+        return (0.0, 0.0)
+    total_size = 0.0
+    total_notional = 0.0
+    for price, size in ask_ladder:
+        if snap_ask <= price <= target_ask:
+            total_size += size
+            total_notional += size * price
+    vwap = total_notional / total_size if total_size > 0 else 0.0
+    return (total_size, vwap)
 
 
 def get_log_file(base: Path) -> Path:
@@ -422,15 +444,29 @@ def format_alert(
             f"**{d['outcome']}**: `{d['prev_mid']}` → `{d['curr_mid']}` "
             f"(delta: `{d['delta']:+.4f}`, `{d['pct']:+.1f}%`)"
         )
-    # Trailing Up prices (last 4)
-    lines.append("")
-    lines.append("**Recent Up prices:**")
-    lines.append("```")
-    for snap in list(history)[-4:]:
-        ts_str = datetime.fromtimestamp(snap["ts_ms"] / 1000, tz=timezone.utc).strftime("%H:%M:%S")
-        up_t = snap["tokens"][0]
-        lines.append(f"  {ts_str}  mid={up_t['mid']}  bid={up_t['bid']}({up_t['bid_size']}) ask={up_t['ask']}({up_t['ask_size']})")
-    lines.append("```")
+    # Per-outcome trailing prices (last 4) with liq stats up to trigger end
+    for d in deltas:
+        outcome = d["outcome"]
+        try:
+            tok_idx = outcomes.index(outcome)
+        except ValueError:
+            tok_idx = 0
+        target_ask = float(d["curr_mid"])
+        lines.append("")
+        lines.append(f"**Recent {outcome} prices (liq up to {target_ask}):**")
+        lines.append("```")
+        for snap in list(history)[-4:]:
+            ts_str = datetime.fromtimestamp(snap["ts_ms"] / 1000, tz=timezone.utc).strftime("%H:%M:%S")
+            tok = snap["tokens"][tok_idx] if tok_idx < len(snap["tokens"]) else snap["tokens"][0]
+            snap_ask = float(tok.get("ask", 0))
+            ladder = tok.get("ask_ladder", [])
+            liq_size, liq_vwap = compute_liq_to_price(ladder, snap_ask, target_ask)
+            lines.append(
+                f"  {ts_str}  mid={tok['mid']}  "
+                f"bid={tok['bid']}({tok['bid_size']}) ask={tok['ask']}({tok['ask_size']})  "
+                f"liq=`{liq_size:.1f}` vwap=`{liq_vwap:.4f}`"
+            )
+        lines.append("```")
     # PM trades during the price move window
     if trade_stats is not None:
         lines.append("")
