@@ -34,8 +34,17 @@ def _load_env() -> None:
         os.environ.setdefault(key.strip(), val.strip())
 
 
-def send_discord(message: str, env_key: str = "DISCORD_WEBHOOK_URL") -> bool:
-    """Send a message via Discord webhook. Returns True on success."""
+def send_discord(
+    message: str = "",
+    env_key: str = "DISCORD_WEBHOOK_URL",
+    embeds: list[dict] | None = None,
+) -> bool:
+    """Send a message via Discord webhook. Returns True on success.
+
+    `message` becomes the top-level `content` (max 2000 chars).
+    `embeds` is an optional list of Discord embed objects (max 10,
+    total 6000 chars across all embeds, each description max 4096).
+    """
     _load_env()
     url = os.environ.get(env_key)
 
@@ -43,7 +52,16 @@ def send_discord(message: str, env_key: str = "DISCORD_WEBHOOK_URL") -> bool:
         log.warning("Discord not configured (missing %s)", env_key)
         return False
 
-    payload = json.dumps({"content": message}).encode()
+    body: dict = {}
+    if message:
+        body["content"] = message
+    if embeds:
+        body["embeds"] = embeds
+    if not body:
+        log.warning("send_discord called with empty message and no embeds")
+        return False
+
+    payload = json.dumps(body).encode()
 
     try:
         req = urllib.request.Request(

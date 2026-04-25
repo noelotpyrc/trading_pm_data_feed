@@ -429,22 +429,25 @@ def append_event(base: Path, event: dict) -> Path:
     return fp
 
 
-def format_alert(
+EMBED_COLOR_PM = 3066993       # green
+EMBED_COLOR_BTC = 15844367     # orange
+
+
+def _build_pm_embed(
     market_title: str, outcomes: list, deltas: list[dict],
-    curr: dict, history: deque,
-    depth_stats: list[dict] | None = None,
-    strike: str | None = None,
-    trade_stats: dict | None = None,
-) -> str:
-    lines = [f"\U0001f4c8 **PM BTC 15m Up/Down Price Alert**"]
-    lines.append(f"{market_title} | Strike: `{strike or '?'}`")
-    lines.append("")
+    history: deque, strike: str | None,
+    trade_stats: dict | None,
+) -> dict:
+    """Build the PM-side embed: deltas, per-outcome history with liq stats, trades."""
+    lines = []
     for d in deltas:
         lines.append(
             f"**{d['outcome']}**: `{d['prev_mid']}` → `{d['curr_mid']}` "
             f"(delta: `{d['delta']:+.4f}`, `{d['pct']:+.1f}%`)"
         )
-    # Per-outcome trailing prices (last 4) with liq stats up to trigger end
+
+    fields = []
+    # Per-outcome trailing prices with liq stats up to trigger end
     for d in deltas:
         outcome = d["outcome"]
         try:
@@ -452,50 +455,83 @@ def format_alert(
         except ValueError:
             tok_idx = 0
         target_ask = float(d["curr_mid"])
-        lines.append("")
-        lines.append(f"**Recent {outcome} prices (liq up to {target_ask}):**")
-        lines.append("```")
+        rows = ["```"]
         for snap in list(history)[-4:]:
             ts_str = datetime.fromtimestamp(snap["ts_ms"] / 1000, tz=timezone.utc).strftime("%H:%M:%S")
             tok = snap["tokens"][tok_idx] if tok_idx < len(snap["tokens"]) else snap["tokens"][0]
             snap_ask = float(tok.get("ask", 0))
             ladder = tok.get("ask_ladder", [])
             liq_size, liq_vwap = compute_liq_to_price(ladder, snap_ask, target_ask)
-            lines.append(
-                f"  {ts_str}  mid={tok['mid']}  "
+            rows.append(
+                f"{ts_str}  mid={tok['mid']}  "
                 f"bid={tok['bid']}({tok['bid_size']}) ask={tok['ask']}({tok['ask_size']})  "
-                f"liq=`{liq_size:.1f}` vwap=`{liq_vwap:.4f}`"
+                f"liq={liq_size:.1f} vwap={liq_vwap:.4f}"
             )
-        lines.append("```")
+        rows.append("```")
+        fields.append({
+            "name": f"Recent {outcome} prices (liq up to {target_ask})",
+            "value": "\n".join(rows),
+            "inline": False,
+        })
+
     # PM trades during the price move window
     if trade_stats is not None:
-        lines.append("")
-        lines.append(
-            f"**PM trades during move ({trade_stats['window_s']}s):** "
-            f"{trade_stats['count']} trades, ${trade_stats['notional']:.2f}"
+        fields.append({
+            "name": f"PM trades during move ({trade_stats['window_s']}s)",
+            "value": (
+                f"{trade_stats['count']} trades, ${trade_stats['notional']:.2f}\n"
+                f"YES: BUY `{trade_stats['yes_buy']:.2f}` SELL `{trade_stats['yes_sell']:.2f}` | "
+                f"NO: BUY `{trade_stats['no_buy']:.2f}` SELL `{trade_stats['no_sell']:.2f}`"
+            ),
+            "inline": False,
+        })
+
+    return {
+        "title": f"\U0001f4c8 {market_title}",
+        "description": f"Strike: `{strike or '?'}`\n\n" + "\n".join(lines),
+        "color": EMBED_COLOR_PM,
+        "fields": fields,
+    }
+
+
+def _build_btc_book_embed(depth_stats: list[dict]) -> dict:
+    """Build the BTCUSDT book embed."""
+    rows = ["```"]
+    for ds in depth_stats:
+        ts_str = datetime.fromtimestamp(ds["ts_ms"] / 1000, tz=timezone.utc).strftime("%H:%M:%S")
+        k_str = f"K={ds['strike_depth']}({ds['strike_side']})" if ds["strike_depth"] is not None else "K=OOR"
+        rows.append(
+            f"{ts_str}  {ds['best_bid']:.1f}/{ds['best_ask']:.1f}  "
+            f"micro={ds['micro']:.1f}  bV={ds['bid_vwap']:.1f}  aV={ds['ask_vwap']:.1f}  "
+            f"b20={ds['bid_20th']:.1f}  a20={ds['ask_20th']:.1f}"
         )
-        lines.append(
-            f"  YES: BUY `{trade_stats['yes_buy']:.2f}` SELL `{trade_stats['yes_sell']:.2f}` | "
-            f"NO: BUY `{trade_stats['no_buy']:.2f}` SELL `{trade_stats['no_sell']:.2f}`"
+        rows.append(
+            f"          bidD={ds['bid_total']:.1f}  askD={ds['ask_total']:.1f}  "
+            f"imb={ds['imb']:.2f}  {k_str}"
         )
-    # Unified book section (30s, 10 snapshots — price + depth + structure)
+    rows.append("```")
+    return {
+        "title": "\U0001f4ca BTCUSDT book (30s)",
+        "description": "\n".join(rows),
+        "color": EMBED_COLOR_BTC,
+    }
+
+
+def build_alert_payload(
+    market_title: str, outcomes: list, deltas: list[dict],
+    curr: dict, history: deque,
+    depth_stats: list[dict] | None = None,
+    strike: str | None = None,
+    trade_stats: dict | None = None,
+) -> tuple[str, list[dict]]:
+    """Build (content, embeds) for Discord webhook send."""
+    content = "\U0001f4c8 **PM BTC 15m Up/Down Price Alert**"
+    embeds = [_build_pm_embed(
+        market_title, outcomes, deltas, history, strike, trade_stats,
+    )]
     if depth_stats:
-        lines.append("")
-        lines.append("**BTCUSDT book (30s):**")
-        lines.append("```")
-        for ds in depth_stats:
-            ts_str = datetime.fromtimestamp(ds["ts_ms"] / 1000, tz=timezone.utc).strftime("%H:%M:%S")
-            k_str = f"K={ds['strike_depth']}({ds['strike_side']})" if ds["strike_depth"] is not None else "K=OOR"
-            lines.append(
-                f"  {ts_str}  {ds['best_bid']:.1f}/{ds['best_ask']:.1f}  "
-                f"micro={ds['micro']:.1f}  bV={ds['bid_vwap']:.1f}  aV={ds['ask_vwap']:.1f}  "
-                f"b20={ds['bid_20th']:.1f}  a20={ds['ask_20th']:.1f}"
-            )
-            lines.append(
-                f"            bidD={ds['bid_total']:.1f}  askD={ds['ask_total']:.1f}  imb={ds['imb']:.2f}  {k_str}"
-            )
-        lines.append("```")
-    return "\n".join(lines)
+        embeds.append(_build_btc_book_embed(depth_stats))
+    return content, embeds
 
 
 def collect(
@@ -620,7 +656,7 @@ def collect(
                     trade_stats["window_s"] = round(
                         (snapshot["ts_ms"] - prev_snapshot["ts_ms"]) / 1000, 1
                     )
-                msg = format_alert(
+                content, embeds = build_alert_payload(
                     market_info["title"], market_info["outcomes"],
                     deltas, snapshot, history,
                     depth_stats, strike, trade_stats,
@@ -630,7 +666,7 @@ def collect(
                     for d in deltas
                 )
                 print(f"[{fmt_now()}] ALERT: {summary}")
-                send_discord(msg, env_key="DISCORD_WEBHOOK_URL_PM")
+                send_discord(content, env_key="DISCORD_WEBHOOK_URL_PM", embeds=embeds)
 
         prev_snapshot = snapshot
         time.sleep(poll_interval)
