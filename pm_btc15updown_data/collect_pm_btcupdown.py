@@ -37,7 +37,7 @@ from btcusdt_perp_signal.alert import send_discord
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE = "https://clob.polymarket.com"
-DATA_API_BASE = "https://data-api.polymarket.com"
+PM_WSS_MARKET = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 EPOCH_S = 900  # 15 minutes
 ALERT_DELTA_FLOOR = 0.05  # minimum absolute delta to trigger alert
 
@@ -45,7 +45,6 @@ BINANCE_WS_DEPTH = "wss://fstream.binance.com/ws/btcusdt@depth20@500ms"
 BINANCE_FAPI = "https://fapi.binance.com"
 DEPTH_HISTORY_SIZE = 30  # ~30s at 1/sec sampling
 TRADE_HISTORY_SIZE = 2000  # plenty of headroom for many minutes
-TRADE_POLL_INTERVAL_S = 3.0
 
 _shutdown = False
 
@@ -121,80 +120,96 @@ class DepthFeed:
 
 
 class TradeFeed:
-    """Background thread that polls Polymarket trade history for the active market."""
+    """Background thread that streams real-time PM trades via WSS."""
 
     def __init__(self, maxlen: int = TRADE_HISTORY_SIZE):
         self.trades: deque = deque(maxlen=maxlen)
         self._thread: threading.Thread | None = None
+        self._ws = None
         self._lock = threading.Lock()
-        self._condition_id: str | None = None
+        self._token_ids: list[str] = []
         self._yes_token_id: str | None = None
-        self._seen_hashes: set = set()
+        self._restart = threading.Event()
 
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def stop(self):
-        pass  # daemon thread, exits with main
+        if self._ws:
+            try:
+                self._ws.close()
+            except Exception:
+                pass
 
-    def set_market(self, condition_id: str | None, yes_token_id: str | None):
-        """Update the active market. Clears buffer on change."""
+    def set_market(self, token_ids: list[str], yes_token_id: str | None):
+        """Update the active market. Clears buffer and reconnects on change."""
         with self._lock:
-            if condition_id != self._condition_id:
-                self._condition_id = condition_id
+            if sorted(token_ids or []) != sorted(self._token_ids):
+                self._token_ids = list(token_ids or [])
                 self._yes_token_id = yes_token_id
                 self.trades.clear()
-                self._seen_hashes.clear()
-                if condition_id:
-                    print(f"[{fmt_now()}] Trade feed: now tracking {condition_id[:20]}...")
+                self._restart.set()
+                if self._ws:
+                    try:
+                        self._ws.close()
+                    except Exception:
+                        pass
+                if token_ids:
+                    print(f"[{fmt_now()}] Trade feed: subscribing to {len(token_ids)} tokens")
 
     def get_between(self, start_ms: int, end_ms: int) -> list[dict]:
-        """Return trades with timestamps within [start_ms, end_ms]."""
-        start_s = start_ms / 1000
-        end_s = end_ms / 1000
+        """Return trades with timestamps (ms) within [start_ms, end_ms]."""
         with self._lock:
-            return [t for t in self.trades if start_s <= t["ts"] <= end_s]
+            return [t for t in self.trades if start_ms <= t["ts_ms"] <= end_ms]
 
     def _run(self):
-        delay = TRADE_POLL_INTERVAL_S
+        delay = 5
         while not _shutdown:
-            time.sleep(TRADE_POLL_INTERVAL_S)
             with self._lock:
-                cid = self._condition_id
+                tids = list(self._token_ids)
                 yes_tid = self._yes_token_id
-            if not cid:
+            if not tids:
+                time.sleep(2)
                 continue
             try:
-                url = f"{DATA_API_BASE}/trades?market={cid}&limit=500"
-                req = urllib.request.Request(url, headers={"User-Agent": "pm-collector/1.0"})
-                with urllib.request.urlopen(req, timeout=10) as r:
-                    raw = json.loads(r.read())
-                with self._lock:
-                    if cid != self._condition_id:
-                        continue  # market changed during fetch
-                    new_count = 0
-                    for t in raw:
-                        h = t.get("transactionHash")
-                        if not h or h in self._seen_hashes:
+                print(f"[{fmt_now()}] Trade feed: connecting to {PM_WSS_MARKET}")
+                self._ws = ws_client.create_connection(PM_WSS_MARKET, timeout=10)
+                self._ws.send(json.dumps({"type": "market", "assets_ids": tids}))
+                self._ws.settimeout(2)
+                self._restart.clear()
+                print(f"[{fmt_now()}] Trade feed: connected")
+                delay = 5
+                while not _shutdown and not self._restart.is_set():
+                    try:
+                        raw = self._ws.recv()
+                    except ws_client.WebSocketTimeoutException:
+                        continue
+                    msgs = json.loads(raw) if raw.startswith("[") else [json.loads(raw)]
+                    for msg in msgs:
+                        if msg.get("event_type") != "last_trade_price":
                             continue
-                        self._seen_hashes.add(h)
-                        token = "YES" if t.get("asset") == yes_tid else "NO"
-                        self.trades.append({
-                            "ts": t.get("timestamp"),
-                            "token": token,
-                            "side": t.get("side"),  # BUY or SELL
-                            "size": float(t.get("size", 0)),
-                            "price": float(t.get("price", 0)),
-                            "hash": h,
-                        })
-                        new_count += 1
-                    # Keep _seen_hashes from growing unbounded
-                    if len(self._seen_hashes) > 5000:
-                        self._seen_hashes = {t["hash"] for t in self.trades}
+                        with self._lock:
+                            token = "YES" if msg.get("asset_id") == self._yes_token_id else "NO"
+                            self.trades.append({
+                                "ts_ms": int(msg.get("timestamp", 0)),
+                                "token": token,
+                                "side": msg.get("side"),  # BUY or SELL (taker)
+                                "size": float(msg.get("size", 0)),
+                                "price": float(msg.get("price", 0)),
+                            })
             except Exception as e:
                 if not _shutdown:
-                    print(f"[{fmt_now()}] Trade feed error: {e}")
+                    print(f"[{fmt_now()}] Trade feed: {e}. Reconnecting in {delay}s...")
+            finally:
+                if self._ws:
+                    try:
+                        self._ws.close()
+                    except Exception:
+                        pass
+            if not _shutdown and not self._restart.is_set():
+                time.sleep(delay)
+                delay = min(delay * 2, 60)
 
 
 def compute_trade_stats(trades: list[dict]) -> dict:
@@ -478,7 +493,7 @@ def collect(
                 history.clear()
                 if trade_feed:
                     trade_feed.set_market(
-                        market_info.get("condition_id"),
+                        market_info.get("token_ids", []),
                         market_info["token_ids"][0] if market_info.get("token_ids") else None,
                     )
             else:
