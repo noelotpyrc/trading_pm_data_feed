@@ -80,7 +80,7 @@ def fetch_strike(epoch_ts: int, retries: int = 2) -> str | None:
 
 def resolve_market(slug: str) -> dict | None:
     """Resolve a btc-updown market by slug."""
-    url = f"{GAMMA_BASE}/events?slug={slug}"
+    url = f"{GAMMA_BASE}/events/keyset?slug={slug}"
     req = urllib.request.Request(url, headers={"User-Agent": "pm-dual/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -89,10 +89,11 @@ def resolve_market(slug: str) -> dict | None:
         print(f"[{fmt_now()}] Gamma API error: {e}")
         return None
 
-    if not data:
+    events = data.get("events", []) if isinstance(data, dict) else []
+    if not events:
         return None
 
-    event = data[0]
+    event = events[0]
     markets = event.get("markets", [])
     if not markets:
         return None
