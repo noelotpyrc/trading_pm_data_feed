@@ -2,7 +2,7 @@
 
 Snapshot of what runs on `vps-madrid` and where the code lives. Keep in sync when adding/removing a stream.
 
-Last verified: 2026-04-19 (updated streams)
+Last verified: 2026-04-29 (V2 keyset migration restart)
 
 ## Data streams (code)
 
@@ -11,6 +11,7 @@ Last verified: 2026-04-19 (updated streams)
 |---|---|---|
 | `cex_data_feed.scripts.accumulate_1m` | 1m BTCUSDT perp OHLCV (Binance) | `data/btcusdt_perp_1m.sqlite` |
 | `cex_data_feed.scripts.repair_gaps_1m` | Daily gap scan/repair | same DB |
+| `cex_data_feed.scripts.coinbase_accumulate_1m` | 1m BTC-USD spot OHLCV (Coinbase) | `data/btcusd_coinbase_1m.sqlite` |
 | `cex_data_feed.scripts.collect_btc_depth` | Orderbook depth logger | `data/btc_depth/` |
 | `cex_data_feed.scripts.collect_liquidations` | Liquidation stream | `data/liquidations/` |
 | `pm_btc15updown_data.collect_pm_btcupdown` | Polymarket single-market | `data/pm_btcupdown/` |
@@ -29,29 +30,64 @@ Last verified: 2026-04-19 (updated streams)
 
 ### Cron (`crontab -l`)
 ```
-*/5 * * * *   accumulate_1m         → data/accumulate_1m.log
-0   0 * * *   repair_gaps_1m        → data/repair_gaps_1m.log
-1   0 * * *   build_daily_artifact  → data/build_artifact.log
-5   0 * * *   build_daily_artifact_v3 → data/build_artifact_v3.log
+*/5    * * * *   accumulate_1m            → data/accumulate_1m.log
+2-57/5 * * * *   coinbase_accumulate_1m   → data/coinbase_accumulate_1m.log
+0      0 * * *   repair_gaps_1m           → data/repair_gaps_1m.log
+1      0 * * *   build_daily_artifact     → data/build_artifact.log
+5      0 * * *   build_daily_artifact_v3  → data/build_artifact_v3.log
 ```
+Coinbase runs offset (`2-57/5`) so it doesn't collide with the Binance accumulator on the same minute.
 
 ### Long-running (tmux — one session per process)
 List: `ssh vps-madrid tmux ls`  ·  Attach: `ssh vps-madrid -t tmux attach -t <session>`
 
-All commands run from `/root/trading_pm_data_feed` inside the `signal` tmux session pattern:
-`tmux new -s <session> -d "cd /root/trading_pm_data_feed && <cmd>"`
-
-| tmux session | Discord webhook env var | Since | Command |
-|---|---|---|---|
-| `signal` | `DISCORD_WEBHOOK_URL` | Apr 13 | `.venv/bin/python -m btcusdt_perp_signal.scripts.run_signal_engine --db data/btcusdt_perp_1m.sqlite` |
-| `btc_depth` | — | Apr 13 | `.venv/bin/python -m cex_data_feed.scripts.collect_btc_depth --log-dir data/btc_depth` |
-| `pm_collector` | `DISCORD_WEBHOOK_URL_PM` | Apr 14 | `.venv/bin/python -m pm_btc15updown_data.collect_pm_btcupdown --log-dir data/pm_btcupdown` |
-| `pm_dual` | `DISCORD_WEBHOOK_URL_PM_DUAL` | Apr 18 (restarted) | `.venv/bin/python -m pm_btc15updown_data.collect_pm_dual --log-dir data/pm_dual` |
-| `liq_collector` | `DISCORD_WEBHOOK_URL` (default) | Apr 17 (restarted) | `.venv/bin/python -m cex_data_feed.scripts.collect_liquidations --log-dir data/liquidations` |
-| `signal-v3-contrarian` | `DISCORD_WEBHOOK_URL_SIGNAL_V3` | Apr 19 | `.venv/bin/python -u -m pm_btc15updown_data.signal_stream_v3 --db data/btcusdt_perp_1m.sqlite --artifact-dir data/artifacts_v3` |
-| `signal-v3-dir` | `DISCORD_WEBHOOK_URL_SIGNAL_V3` | Apr 19 | `.venv/bin/python -u -m pm_btc15updown_data.signal_stream_v3_directional --db data/btcusdt_perp_1m.sqlite --artifact-dir data/artifacts_v3` |
+Each block below is the full launch command; copy-paste it directly into the VPS shell to (re)create the session detached. All commands assume the project venv at `/root/trading_pm_data_feed/.venv`.
 
 Webhook URLs live in VPS `.env` (loaded by `alert.send_discord`). Missing env var → send silently skipped.
+
+#### `signal` — signal engine + alerts (since Apr 13)
+Webhook: `DISCORD_WEBHOOK_URL`
+```bash
+tmux new -d -s signal "cd /root/trading_pm_data_feed && .venv/bin/python -m btcusdt_perp_signal.scripts.run_signal_engine --db data/btcusdt_perp_1m.sqlite"
+```
+
+#### `btc_depth` — Binance orderbook depth logger (since Apr 13)
+Webhook: —
+```bash
+tmux new -d -s btc_depth "cd /root/trading_pm_data_feed && .venv/bin/python -m cex_data_feed.scripts.collect_btc_depth --log-dir data/btc_depth"
+```
+
+#### `liq_collector` — Binance liquidation stream (since Apr 17)
+Webhook: `DISCORD_WEBHOOK_URL` (default)
+```bash
+tmux new -d -s liq_collector "cd /root/trading_pm_data_feed && .venv/bin/python -m cex_data_feed.scripts.collect_liquidations --log-dir data/liquidations"
+```
+
+#### `pm_collector` — Polymarket single-market BTC up/down (since Apr 29, V2 keyset)
+Webhook: `DISCORD_WEBHOOK_URL_PM`
+```bash
+tmux new -d -s pm_collector "cd /root/trading_pm_data_feed && .venv/bin/python -m pm_btc15updown_data.collect_pm_btcupdown --log-dir data/pm_btcupdown"
+```
+
+#### `pm_dual` — Polymarket dual-market arb tracker (since Apr 29, V2 keyset)
+Webhook: `DISCORD_WEBHOOK_URL_PM_DUAL`
+```bash
+tmux new -d -s pm_dual "cd /root/trading_pm_data_feed && .venv/bin/python -m pm_btc15updown_data.collect_pm_dual --log-dir data/pm_dual"
+```
+
+#### `signal-v3-contrarian` — V3 contrarian live stream (since Apr 29, V2 keyset)
+Webhook: `DISCORD_WEBHOOK_URL_SIGNAL_V3`
+```bash
+tmux new -d -s signal-v3-contrarian "cd /root/trading_pm_data_feed && .venv/bin/python -u -m pm_btc15updown_data.signal_stream_v3 --db data/btcusdt_perp_1m.sqlite --artifact-dir data/artifacts_v3"
+```
+
+#### `signal-v3-dir` — V3 directional live stream (since Apr 29, V2 keyset)
+Webhook: `DISCORD_WEBHOOK_URL_SIGNAL_V3`
+```bash
+tmux new -d -s signal-v3-dir "cd /root/trading_pm_data_feed && .venv/bin/python -u -m pm_btc15updown_data.signal_stream_v3_directional --db data/btcusdt_perp_1m.sqlite --artifact-dir data/artifacts_v3"
+```
+
+To restart any session: `tmux kill-session -t <name>` then re-run its block above. To stop cleanly while attached: `Ctrl-C` in the window, then `exit`.
 
 ## Health checks
 
