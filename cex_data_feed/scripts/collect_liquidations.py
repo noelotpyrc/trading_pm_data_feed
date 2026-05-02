@@ -29,7 +29,7 @@ import websocket
 
 from btcusdt_perp_signal.alert import send_discord
 
-WS_URI = "wss://fstream.binance.com/ws/btcusdt@forceOrder"
+WS_URI = "wss://fstream.binance.com/market/ws/btcusdt@forceOrder"
 RECONNECT_DELAY_S = 5
 MAX_RECONNECT_DELAY_S = 60
 ALERT_QTY_THRESHOLD = 1.0

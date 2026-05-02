@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 # parkinson_1440 is the largest rolling window; 1800 gives comfortable padding
 HISTORY_BARS = 1800
-BINANCE_WS_URL = "wss://fstream.binance.com/ws/btcusdt@kline_1m"
+BINANCE_WS_URL = "wss://fstream.binance.com/market/ws/btcusdt@kline_1m"
 
 # Feature columns to record with each signal
 FEATURE_COLS = [
