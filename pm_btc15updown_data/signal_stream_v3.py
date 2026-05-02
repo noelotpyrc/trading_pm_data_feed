@@ -45,7 +45,7 @@ from pm_btc15updown_data.collect_pm_btcupdown import (
     fmt_now,
 )
 
-KLINE_WS = "wss://fstream.binance.com/ws/btcusdt@kline_1m"
+KLINE_WS = "wss://fstream.binance.com/market/ws/btcusdt@kline_1m"
 LOOP_TIMEOUT_S = 1.0
 POLL_INTERVAL_MS = 3_000
 ALERT_POLL_COUNT = 10

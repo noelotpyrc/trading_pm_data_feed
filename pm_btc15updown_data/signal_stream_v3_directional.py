@@ -61,7 +61,7 @@ from pm_btc15updown_data.signal_stream_v3 import (
     _today_utc,
 )
 
-KLINE_WS = "wss://fstream.binance.com/ws/btcusdt@kline_1m"
+KLINE_WS = "wss://fstream.binance.com/market/ws/btcusdt@kline_1m"
 LOOP_TIMEOUT_S = 1.0
 POLL_INTERVAL_MS = 3_000          # phase-1: 8 polls at 3s
 POLL_COUNT = 8
