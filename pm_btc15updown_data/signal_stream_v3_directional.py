@@ -4,10 +4,12 @@ Live V3 directional signal stream.
 
 Fires on these TTL/prob combinations (directional — buy the side the model
 leans toward):
-  TTL=9  prob > 0.88  -> YES
-  TTL=4  prob < 0.04  -> NO
-  TTL=5  prob < 0.10  -> NO
-  TTL=6  prob < 0.06  -> NO
+  TTL=9   prob > 0.88  -> YES
+  TTL=10  prob > 0.80  -> YES
+  TTL=4   prob < 0.04  -> NO
+  TTL=5   prob < 0.10  -> NO
+  TTL=6   prob < 0.06  -> NO
+  TTL=12  prob < 0.19  -> NO
 
 On trigger:
   - Polls the target PM token (YES or NO) every 3s, 8 times (~21s window)
@@ -73,9 +75,11 @@ WINDOW_MS = GROUP_MINUTES * 60 * 1000
 
 TRIGGERS = [
     {"ttl": 9, "op": "gt", "threshold": 0.88, "target": "YES"},
+    {"ttl": 10, "op": "gt", "threshold": 0.80, "target": "YES"},
     {"ttl": 4, "op": "lt", "threshold": 0.04, "target": "NO"},
     {"ttl": 5, "op": "lt", "threshold": 0.10, "target": "NO"},
     {"ttl": 6, "op": "lt", "threshold": 0.06, "target": "NO"},
+    {"ttl": 12, "op": "lt", "threshold": 0.19, "target": "NO"},
 ]
 
 _shutdown = False
