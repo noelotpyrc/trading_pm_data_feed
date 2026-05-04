@@ -286,6 +286,9 @@ class ContrarianJob:
 
     summary_sent: bool = False
 
+    # Per-rule entry threshold; falls back to the module-level default.
+    delta_threshold: float = DELTA_ENTRY_THRESHOLD
+
     @property
     def key(self) -> str:
         return f"{self.window_start_ms}:{self.ttl_at_trigger}"
@@ -294,7 +297,7 @@ class ContrarianJob:
     def real_entry_count(self) -> int:
         return sum(
             1 for p in self.polls
-            if p.get("mid", 0) > 0 and (p.get("delta") or 0) > DELTA_ENTRY_THRESHOLD
+            if p.get("mid", 0) > 0 and (p.get("delta") or 0) > self.delta_threshold
         )
 
 
@@ -350,7 +353,7 @@ def format_contrarian_summary(
     if deltas:
         lines.append(
             f"Real entries: **{job.real_entry_count}/{len(job.polls)}** "
-            f"(delta > {DELTA_ENTRY_THRESHOLD})  "
+            f"(delta > {job.delta_threshold})  "
             f"delta min=`{min(deltas):.4f}` "
             f"med=`{float(np.median(deltas)):.4f}` "
             f"max=`{max(deltas):.4f}`"
@@ -574,8 +577,18 @@ def run_stream(
                     if debug:
                         print(f"[{fmt_now()}] {bar_ts} TTL={ttl} "
                               f"prob={prob:.4f} close={bar['c']:.1f}")
+                    # Trigger gating. Each branch may carry its own delta threshold.
+                    fired = False
+                    delta_thresh = DELTA_ENTRY_THRESHOLD
                     if ttl <= 2 and (prob > prob_high or prob < prob_low):
                         buy_no = prob > prob_high
+                        fired = True
+                    elif ttl == 5 and prob < 0.20:
+                        # Earlier-window contrarian: looser prob, stricter delta
+                        buy_no = False
+                        fired = True
+                        delta_thresh = 0.09
+                    if fired:
                         action = "BUY NO" if buy_no else "BUY YES"
                         fair = (1.0 - prob) if buy_no else prob
                         target_idx = 1 if buy_no else 0
@@ -594,10 +607,11 @@ def run_stream(
                             outcomes=outs,
                             next_poll_at_ms=now_ms(),
                             near_close_next_ms=win_end - NEAR_CLOSE_OFFSET_MS,
+                            delta_threshold=delta_thresh,
                         )
                         jobs.append(job)
                         print(f"[{fmt_now()}] TRIGGER: {action} prob={prob:.4f} "
-                              f"fair={fair:.4f} TTL={ttl}")
+                              f"fair={fair:.4f} TTL={ttl} delta>{delta_thresh}")
             elif debug:
                 print(f"[{fmt_now()}] {bar_ts} TTL={ttl} skip (no features/strike/market)")
 
