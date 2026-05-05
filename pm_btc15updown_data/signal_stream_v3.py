@@ -156,38 +156,53 @@ class KlineFeed:
             bars.append(self.pending.popleft())
         return bars
 
+    # --- WebSocketApp callbacks ---------------------------------------------
+
+    def _on_open(self, ws):
+        print(f"[{fmt_now()}] Kline feed: connected")
+
+    def _on_message(self, ws, raw):
+        k = json.loads(raw).get("k", {})
+        if k.get("x"):  # candle closed
+            self.pending.append({
+                "t": int(k["t"]),
+                "o": float(k["o"]),
+                "h": float(k["h"]),
+                "l": float(k["l"]),
+                "c": float(k["c"]),
+            })
+            self.bar_ready.set()
+
+    def _on_close(self, ws, status, msg):
+        if not _shutdown:
+            print(f"[{fmt_now()}] Kline feed: closed (status={status}, msg={msg})")
+
+    def _on_error(self, ws, err):
+        if not _shutdown:
+            print(f"[{fmt_now()}] Kline feed: error: {err}")
+
+    # --- Run loop -----------------------------------------------------------
+
     def _run(self):
         delay = 5
         while not _shutdown:
             try:
                 print(f"[{fmt_now()}] Kline feed: connecting")
-                self._ws = ws_client.create_connection(KLINE_WS, timeout=10)
-                print(f"[{fmt_now()}] Kline feed: connected")
+                self._ws = ws_client.WebSocketApp(
+                    KLINE_WS,
+                    on_open=self._on_open,
+                    on_message=self._on_message,
+                    on_close=self._on_close,
+                    on_error=self._on_error,
+                )
+                # Active heartbeat: ping every 30s, treat as dead if no pong in 10s.
+                # run_forever blocks until the connection drops or ping_timeout fires.
+                self._ws.run_forever(ping_interval=30, ping_timeout=10)
+                # Successful connection lifetime resets the backoff
                 delay = 5
-                while not _shutdown:
-                    try:
-                        raw = self._ws.recv()
-                    except ws_client.WebSocketTimeoutException:
-                        continue
-                    k = json.loads(raw).get("k", {})
-                    if k.get("x"):  # candle closed
-                        self.pending.append({
-                            "t": int(k["t"]),
-                            "o": float(k["o"]),
-                            "h": float(k["h"]),
-                            "l": float(k["l"]),
-                            "c": float(k["c"]),
-                        })
-                        self.bar_ready.set()
             except Exception as e:
                 if not _shutdown:
                     print(f"[{fmt_now()}] Kline feed: {e}. Reconnecting in {delay}s...")
-            finally:
-                if self._ws:
-                    try:
-                        self._ws.close()
-                    except Exception:
-                        pass
             if not _shutdown:
                 time.sleep(delay)
                 delay = min(delay * 2, 60)
