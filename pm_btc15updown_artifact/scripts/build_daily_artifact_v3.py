@@ -31,7 +31,9 @@ if __name__ == "__main__":
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-from pm_btc15updown_artifact.data_loader import load_ohlcv_window, check_data_quality
+from pm_btc15updown_artifact.data_loader import (
+    load_ohlcv_window, check_data_quality, TABLE as DEFAULT_TABLE,
+)
 from pm_btc15updown_artifact.vol_signal_artifacts_v3 import (
     VolSignalBuildConfigV3,
     build_daily_signal_artifact,
@@ -42,6 +44,7 @@ def _load_and_check(
     db_path: Path,
     score_date: pd.Timestamp,
     config: VolSignalBuildConfigV3,
+    table: str = DEFAULT_TABLE,
     debug: bool = False,
 ) -> tuple[pd.DataFrame, dict]:
     """Load OHLCV window needed for artifact build, with data quality checks."""
@@ -49,9 +52,9 @@ def _load_and_check(
     data_end = score_date + timedelta(days=1)
 
     if debug:
-        print(f"[DEBUG] Loading OHLCV: {history_start} .. {data_end}")
+        print(f"[DEBUG] Loading OHLCV from table={table}: {history_start} .. {data_end}")
 
-    df = load_ohlcv_window(db_path, start=history_start, end=data_end)
+    df = load_ohlcv_window(db_path, start=history_start, end=data_end, table=table)
 
     if df.empty:
         raise ValueError(
@@ -95,10 +98,13 @@ def build_once(
     out_dir: Path,
     score_date: pd.Timestamp,
     config: VolSignalBuildConfigV3,
+    table: str = DEFAULT_TABLE,
     debug: bool = False,
 ) -> Path:
     """Build and save a single day's artifact. Returns the output directory."""
-    ohlcv_df, quality_stats = _load_and_check(db_path, score_date, config, debug=debug)
+    ohlcv_df, quality_stats = _load_and_check(
+        db_path, score_date, config, table=table, debug=debug
+    )
 
     artifact = build_daily_signal_artifact(ohlcv_df, score_date, config, extra_metadata=quality_stats)
 
@@ -118,6 +124,7 @@ def run(
     db_path: Path,
     out_dir: Path,
     score_date: pd.Timestamp,
+    table: str = DEFAULT_TABLE,
     retries: int = 3,
     debug: bool = False,
 ) -> int:
@@ -127,7 +134,7 @@ def run(
 
     for attempt in range(1, retries + 1):
         try:
-            build_once(db_path, out_dir, score_date, config, debug=debug)
+            build_once(db_path, out_dir, score_date, config, table=table, debug=debug)
             return 0
         except Exception as e:
             print(f"[{now_str}] Attempt {attempt}/{retries} failed: {e}",
@@ -155,6 +162,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                    help="Output directory for artifacts (default: data/artifacts_v3)")
     p.add_argument("--date", type=str, default=None,
                    help="Score date (YYYY-MM-DD, default: today UTC)")
+    p.add_argument("--table", default=None,
+                   help=f"OHLCV table name (default: {DEFAULT_TABLE})")
     p.add_argument("--retry", type=int, default=3,
                    help="Number of retry attempts on failure (default: 3)")
     p.add_argument("--debug", action="store_true",
@@ -174,6 +183,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         db_path=args.db,
         out_dir=args.out_dir,
         score_date=score_date,
+        table=args.table or DEFAULT_TABLE,
         retries=args.retry,
         debug=args.debug,
     )
