@@ -386,6 +386,15 @@ def fetch_prices(token_ids: list[str]) -> dict | None:
                 ([float(a["price"]), float(a["size"])] for a in asks),
                 key=lambda x: x[0],
             )
+            # Server-side fields for staleness detection. book.timestamp is the
+            # last update time of the book (ms, string); book.hash changes only
+            # when the book content changes; last_trade_price is independent of
+            # the resting orderbook.
+            book_ts_raw = book.get("timestamp")
+            try:
+                book_ts_ms = int(book_ts_raw) if book_ts_raw is not None else None
+            except (TypeError, ValueError):
+                book_ts_ms = None
             snapshot["tokens"].append({
                 "token_id": tid,
                 "mid": f"{mid:.4f}",
@@ -394,6 +403,9 @@ def fetch_prices(token_ids: list[str]) -> dict | None:
                 "ask": best_ask["price"],
                 "ask_size": best_ask["size"],
                 "ask_ladder": ask_ladder,  # [[price, size], ...] sorted asc by price
+                "book_ts_ms": book_ts_ms,  # server-side update ts; None if missing
+                "book_hash": book.get("hash"),
+                "last_trade_price": book.get("last_trade_price"),
             })
         except Exception as e:
             print(f"[{fmt_now()}] CLOB book error for {tid[:20]}...: {e}")

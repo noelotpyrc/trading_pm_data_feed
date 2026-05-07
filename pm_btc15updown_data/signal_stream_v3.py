@@ -273,7 +273,42 @@ def _extract_token(snap: dict, idx: int) -> dict:
         "mid": _f(tok.get("mid")),
         "ask_size": tok.get("ask_size"),
         "bid_size": tok.get("bid_size"),
+        # Server-side staleness signals (added 2026-05). May be None on
+        # older snapshots that pre-date the fetch_prices change.
+        "book_ts_ms": tok.get("book_ts_ms"),
+        "book_hash": tok.get("book_hash"),
     }
+
+
+def _stale_metrics(polls: list[dict]) -> dict:
+    """Server-book staleness metrics across a sequence of polls.
+
+    A poll is "unchanged" when its `book_hash` equals the prior poll's —
+    i.e. PM reports the book has not been updated. Mirrors the helper in
+    signal_stream_v3_directional.py.
+    """
+    n = len(polls)
+    n_unchanged = 0
+    for i in range(1, n):
+        h_curr = polls[i].get("book_hash")
+        h_prev = polls[i - 1].get("book_hash")
+        if h_curr is not None and h_curr == h_prev:
+            n_unchanged += 1
+    distinct = len({p.get("book_hash") for p in polls if p.get("book_hash") is not None})
+    ts_vals = [p.get("book_ts_ms") for p in polls if p.get("book_ts_ms") is not None]
+    span_ms = (max(ts_vals) - min(ts_vals)) if ts_vals else None
+    return {
+        "n_polls": n,
+        "n_unchanged": n_unchanged,
+        "unique_book_hash": distinct,
+        "book_ts_span_ms": span_ms,
+    }
+
+
+def _is_stale(metrics: dict) -> bool:
+    """All polls saw the same book + we had ≥ 2 polls. Pre-feature snapshots
+    without book_hash yield distinct=0 → False (treated as 'unknown')."""
+    return metrics["n_polls"] >= 2 and metrics["unique_book_hash"] == 1
 
 
 @dataclass
@@ -352,8 +387,13 @@ def format_contrarian_summary(
         job.fired_at_ms / 1000, tz=timezone.utc
     ).strftime("%H:%M:%S")
 
+    sm = _stale_metrics(job.polls)
+    stale_tag = ""
+    if _is_stale(sm):
+        stale_tag = f" [⚠ STALE {sm['n_unchanged']}/{sm['n_polls']}]"
+
     lines = [
-        f"{emoji} **Contrarian {job.action}** | P(Yes)=`{job.prob:.4f}`  "
+        f"{emoji} **Contrarian {job.action}**{stale_tag} | P(Yes)=`{job.prob:.4f}`  "
         f"fair {target_label}=`{job.fair:.4f}`  TTL={job.ttl_at_trigger}",
         f"{market.get('title', '')}",
         f"Window: {window_close_utc}  (trigger {trigger_utc})",
