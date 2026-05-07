@@ -638,6 +638,10 @@ def run_stream(
                     if ttl <= 2 and (prob > prob_high or prob < prob_low):
                         buy_no = prob > prob_high
                         fired = True
+                    elif ttl == 3 and prob < 0.10:
+                        # Mid-window contrarian: tight prob, default delta
+                        buy_no = False
+                        fired = True
                     elif ttl == 5 and prob < 0.20:
                         # Earlier-window contrarian: looser prob, stricter delta
                         buy_no = False
