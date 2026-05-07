@@ -8,6 +8,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 TABLE = "ohlcv_btcusdt_1m"
@@ -106,8 +107,10 @@ def check_data_quality(
         diffs = df["datetime_utc"].diff().dt.total_seconds() / 60
         max_gap_minutes = diffs.max()
         if max_gap_minutes > 1:
-            gap_idx = diffs.idxmax()
-            gap_at = df["datetime_utc"].iloc[gap_idx - 1] if gap_idx > 0 else df["datetime_utc"].iloc[0]
+            # diffs.idxmax() returns a LABEL — wrong when df is a sliced view
+            # whose index is not a fresh RangeIndex. Use positional argmax instead.
+            gap_pos = int(np.nanargmax(diffs.to_numpy()))
+            gap_at = df["datetime_utc"].iloc[gap_pos - 1] if gap_pos > 0 else df["datetime_utc"].iloc[0]
             stats["largest_gap_minutes"] = int(max_gap_minutes)
             stats["largest_gap_at"] = str(gap_at)
             print(f"[WARN]{' ' + label + ':' if label else ''} "
