@@ -43,7 +43,14 @@ List: `ssh vps-madrid tmux ls`  ·  Attach: `ssh vps-madrid -t tmux attach -t <s
 
 Each block below is the full launch command; copy-paste it directly into the VPS shell to (re)create the session detached. All commands assume the project venv at `/root/trading_pm_data_feed/.venv`.
 
-Webhook URLs live in VPS `.env` (loaded by `alert.send_discord`). Missing env var → send silently skipped.
+Webhook URLs live in VPS `.env` (loaded by `alert.send_discord`). Missing env var → send silently skipped. All channels are in Discord server `1465846881836863796`:
+
+| Env var | Channel | Channel ID | Used by |
+|---|---|---|---|
+| `DISCORD_WEBHOOK_URL` | `#trading-signals` | `1492314707372150814` | `signal`, `liq_collector` |
+| `DISCORD_WEBHOOK_URL_PM` | `#pm-price-alert` | `1492688541405413396` | `pm_collector` |
+| `DISCORD_WEBHOOK_URL_PM_DUAL` | `#pm-dual-price` | `1493441980968075488` | `pm_dual` |
+| `DISCORD_WEBHOOK_URL_SIGNAL_V3` | `#pm-trading-signals` | `1494415390875320330` | `signal-v3-contrarian`, `signal-v3-dir` |
 
 #### `signal` — signal engine + alerts (since Apr 13)
 Webhook: `DISCORD_WEBHOOK_URL`
