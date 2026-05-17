@@ -23,11 +23,11 @@ Exchange's public REST endpoint (`api.exchange.coinbase.com`, no auth).
 
 The 300-row cap is why `fetch_closed_1m_since` walks forward in 5h windows.
 
-## Known gaps (BTC-USD, 2025-04-28 → present)
+## Known gaps (BTC-USD, 2025-04-28 → 2026-05-15)
 
-405 missing minutes across 30 runs. **All confirmed real Coinbase-side gaps**
-— probing the live API for the same windows returns no candles. Not fixable
-via REST.
+Two major Coinbase Exchange outages (2025-10-25 and 2026-05-08) plus ~70
+scattered single-tick-less minutes. **All confirmed real Coinbase-side gaps**
+— probing the live API returns no candles. Not fixable via REST.
 
 | Start (UTC) | End (UTC) | Minutes |
 |---|---|---|
@@ -61,13 +61,18 @@ via REST.
 | 2026-03-17 00:36 | 2026-03-17 00:36 | 1 |
 | 2026-04-25 05:28 | 2026-04-25 05:30 | 3 |
 | 2026-04-25 12:33 | 2026-04-25 12:33 | 1 |
+| **2026-05-08 01:17** | **2026-05-08 07:47** | **391** |
+| _(plus ~11 min of micro-gaps in May, not individually enumerated)_ | | |
 
-**The big 349-min gap on 2025-10-25 is a real Coinbase Exchange outage.**
-It accounts for 86% of all missing data. The remaining 56 minutes are
-single-tick-less minutes that Coinbase's candle endpoint omits (unlike
-Binance, which forward-fills empty bars).
+**Two Coinbase Exchange outages dominate:** the 349-min one on 2025-10-25
+and the 391-min one on 2026-05-08. Together they account for ~94% of all
+missing minutes. The rest are single-tick-less minutes that Coinbase's
+candle endpoint omits (unlike Binance, which forward-fills empty bars).
 
-Coverage: 526,699 distinct timestamps / 527,104 expected = **99.92%**.
+Coverage as of 2026-05-15: **~99.91%** (≈550,000 distinct timestamps).
+To regenerate an up-to-date gap table, run a scan against the latest DB
+snapshot (`SELECT DISTINCT timestamp ... ORDER BY` and diff against
+`pd.date_range(min, max, freq="1min")`).
 
 ## Downstream handling
 
