@@ -43,14 +43,16 @@ List: `ssh vps-madrid tmux ls`  ·  Attach: `ssh vps-madrid -t tmux attach -t <s
 
 Each block below is the full launch command; copy-paste it directly into the VPS shell to (re)create the session detached. All commands assume the project venv at `/root/trading_pm_data_feed/.venv`.
 
-Webhook URLs live in VPS `.env` (loaded by `alert.send_discord`). Missing env var → send silently skipped. All channels are in Discord server `1465846881836863796`:
+Webhook URLs live in VPS `.env` (loaded by `alert.send_discord`). Missing or empty env var → send silently skipped. All channels are in Discord server `1465846881836863796`:
 
-| Env var | Channel | Channel ID | Used by |
-|---|---|---|---|
-| `DISCORD_WEBHOOK_URL` | `#trading-signals` | `1492314707372150814` | `signal`, `liq_collector` |
-| `DISCORD_WEBHOOK_URL_PM` | `#pm-price-alert` | `1492688541405413396` | `pm_collector` |
-| `DISCORD_WEBHOOK_URL_PM_DUAL` | `#pm-dual-price` | `1493441980968075488` | `pm_dual` |
-| `DISCORD_WEBHOOK_URL_SIGNAL_V3` | `#pm-trading-signals` | `1494415390875320330` | `signal-v3-contrarian`, `signal-v3-dir` |
+| Env var | Channel | Channel ID | Used by | Discord status |
+|---|---|---|---|---|
+| `DISCORD_WEBHOOK_URL` | `#trading-signals` | `1492314707372150814` | `signal`, `liq_collector` | ✅ active |
+| `DISCORD_WEBHOOK_URL_PM` | `#pm-price-alert` | `1492688541405413396` | `pm_collector` | 🔇 silenced 2026-05-07 |
+| `DISCORD_WEBHOOK_URL_PM_DUAL` | `#pm-dual-price` | `1493441980968075488` | `pm_dual` | 🔇 silenced 2026-05-07 |
+| `DISCORD_WEBHOOK_URL_SIGNAL_V3` | `#pm-trading-signals` | `1494415390875320330` | `signal-v3-contrarian`, `signal-v3-dir` | ✅ active |
+
+**Webhook silencing decision (2026-05-07):** `DISCORD_WEBHOOK_URL_PM` and `DISCORD_WEBHOOK_URL_PM_DUAL` were emptied in `.env` to silence the per-poll `pm_collector` price chatter and the per-arb `pm_dual` triggers — too noisy for the value they were providing. The underlying sessions keep running and persisting JSONL to disk (`data/pm_btcupdown/*.jsonl`, `data/pm_dual/*.jsonl`) as before; only the `send_discord` calls no-op. To re-enable later, restore the URL line in `.env` (a timestamped backup is on the VPS) and restart the affected session(s). `DISCORD_WEBHOOK_URL` (signal engine + liquidation alerts) and `DISCORD_WEBHOOK_URL_SIGNAL_V3` (V3 streams) remain active.
 
 #### `signal` — signal engine + alerts (since Apr 13)
 Webhook: `DISCORD_WEBHOOK_URL`
