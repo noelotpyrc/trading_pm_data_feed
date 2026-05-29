@@ -2,6 +2,8 @@
 
 Manual checklist for VPS cleanup and local backup, run at the start of each month.
 
+> **Stopped streams (2026-05-29):** `pm_dual`, `signal-v3-contrarian`, `signal-v3-dir` (tmux) and the v1 `build_daily_artifact` cron were stopped — see [`ops_memo.md` changelog](ops_memo.md). Their SSD folders (`pm_dual/`, `pm_btc15updown_artifact/`) are now **frozen**: no new daily files after that date, so it's expected they stop growing while `btc_depth/`, `pm_btcupdown/`, `liquidations/`, and `pm_btc15updown_artifact_v3/` keep advancing. The v3 artifact cron stays running (feeds the downstream live trading system).
+
 ## Backup destination
 
 All backups go to external SSD, organized per pipeline:
@@ -145,7 +147,7 @@ If a kernel newer than `6.8.0-111` appears, schedule a reboot:
 
 1. Run Step 1 above first (fresh DB snapshot to SSD) so we have a known-good restore point.
 2. `ssh vps-madrid "apt install -y linux-image-generic && reboot"`.
-3. After ~1 min, reconnect. Cron auto-resumes; **manually relaunch the 7 tmux sessions** per [`ops_memo.md`](ops_memo.md). Each session has its full launch command in that file.
+3. After ~1 min, reconnect. Cron auto-resumes; **manually relaunch the 4 active tmux sessions** (`signal`, `btc_depth`, `liq_collector`, `pm_collector`) per [`ops_memo.md`](ops_memo.md). Each session has its full launch command in that file. (The stopped V3/`pm_dual` sessions are intentionally not relaunched — see the stopped-streams note at the top.)
 4. Verify pipelines are writing again — file mtimes in `data/btc_depth/`, `data/pm_btcupdown/`, etc. should be within a few minutes of "now".
 
 Once the upgrade + reboot is done and pipelines are healthy, **delete this section**.

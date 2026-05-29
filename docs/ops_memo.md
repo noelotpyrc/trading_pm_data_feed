@@ -2,7 +2,11 @@
 
 Snapshot of what runs on `vps-madrid` and where the code lives. Keep in sync when adding/removing a stream.
 
-Last verified: 2026-04-29 (V2 keyset migration restart)
+Last verified: 2026-05-29 (stopped `pm_dual`, both V3 signal streams, and v1 artifact cron — see changelog)
+
+**Changelog**
+- **2026-05-29** — Stopped 4 streams: `pm_dual` tmux, `signal-v3-contrarian` tmux, `signal-v3-dir` tmux, and the v1 `build_daily_artifact` cron (commented out, crontab backed up to `/root/crontab.bak.20260529-153845`). The v3 artifact cron (`build_daily_artifact_v3`) stays running — it feeds a downstream **live trading system**, not the now-stopped V3 signal streams.
+- **2026-04-29** — V2 keyset migration restart.
 
 ## Data streams (code)
 
@@ -15,15 +19,15 @@ Last verified: 2026-04-29 (V2 keyset migration restart)
 | `cex_data_feed.scripts.collect_btc_depth` | Orderbook depth logger | `data/btc_depth/` |
 | `cex_data_feed.scripts.collect_liquidations` | Liquidation stream | `data/liquidations/` |
 | `pm_btc15updown_data.collect_pm_btcupdown` | Polymarket single-market | `data/pm_btcupdown/` |
-| `pm_btc15updown_data.collect_pm_dual` | Polymarket dual-market | `data/pm_dual/` |
+| `pm_btc15updown_data.collect_pm_dual` | Polymarket dual-market | `data/pm_dual/` ⏹ **stopped 2026-05-29** |
 
 ### Artifacts / signals
 | Module | Purpose | Output |
 |---|---|---|
-| `pm_btc15updown_artifact.scripts.build_daily_artifact` | v1 vol signal artifact | `data/artifacts/` |
-| `pm_btc15updown_artifact.scripts.build_daily_artifact_v3` | v3 per-TTL MAR artifact | `data/artifacts_v3/` |
-| `pm_btc15updown_data.signal_stream_v3` | Live V3 contrarian stream — triggers TTL≤2 prob>0.90/<0.10, 10 polls at 3s, sends only on real entry (delta>0.05), near-close both tokens | in-process |
-| `pm_btc15updown_data.signal_stream_v3_directional` | Live V3 directional stream — 4 specific TTL/prob rules, 8 polls at 3s, near-close both tokens, JSONL log | in-process + `logs/signal_v3_directional.jsonl` |
+| `pm_btc15updown_artifact.scripts.build_daily_artifact` | v1 vol signal artifact | `data/artifacts/` ⏹ **stopped 2026-05-29** (cron commented out) |
+| `pm_btc15updown_artifact.scripts.build_daily_artifact_v3` | v3 per-TTL MAR artifact | `data/artifacts_v3/` — **consumed by downstream live trading system; keep running** |
+| `pm_btc15updown_data.signal_stream_v3` | Live V3 contrarian stream — triggers TTL≤2 prob>0.90/<0.10, 10 polls at 3s, sends only on real entry (delta>0.05), near-close both tokens | in-process ⏹ **stopped 2026-05-29** |
+| `pm_btc15updown_data.signal_stream_v3_directional` | Live V3 directional stream — 4 specific TTL/prob rules, 8 polls at 3s, near-close both tokens, JSONL log | in-process + `logs/signal_v3_directional.jsonl` ⏹ **stopped 2026-05-29** |
 | `btcusdt_perp_signal.scripts.run_signal_engine` | Signal engine + alerts | `data/signal_engine.log` |
 
 ## Running on VPS
@@ -33,13 +37,15 @@ Last verified: 2026-04-29 (V2 keyset migration restart)
 */5    * * * *   accumulate_1m            → data/accumulate_1m.log
 2-57/5 * * * *   coinbase_accumulate_1m   → data/coinbase_accumulate_1m.log
 0      0 * * *   repair_gaps_1m           → data/repair_gaps_1m.log
-1      0 * * *   build_daily_artifact     → data/build_artifact.log
-5      0 * * *   build_daily_artifact_v3  → data/build_artifact_v3.log
+# 1    0 * * *   build_daily_artifact     → data/build_artifact.log   ⏹ STOPPED 2026-05-29 (line commented out)
+5      0 * * *   build_daily_artifact_v3  → data/build_artifact_v3.log  (feeds downstream live trading system — keep)
 ```
-Coinbase runs offset (`2-57/5`) so it doesn't collide with the Binance accumulator on the same minute.
+Coinbase runs offset (`2-57/5`) so it doesn't collide with the Binance accumulator on the same minute. The v1 `build_daily_artifact` line is commented out in the live crontab as of 2026-05-29; crontab backed up to `/root/crontab.bak.20260529-153845`. To re-enable, uncomment that line via `crontab -e`.
 
 ### Long-running (tmux — one session per process)
 List: `ssh vps-madrid tmux ls`  ·  Attach: `ssh vps-madrid -t tmux attach -t <session>`
+
+**Expected sessions as of 2026-05-29:** `signal`, `btc_depth`, `liq_collector`, `pm_collector` (4 active). Stopped: `pm_dual`, `signal-v3-contrarian`, `signal-v3-dir` (launch commands kept below for restart).
 
 Each block below is the full launch command; copy-paste it directly into the VPS shell to (re)create the session detached. All commands assume the project venv at `/root/trading_pm_data_feed/.venv`.
 
@@ -49,8 +55,8 @@ Webhook URLs live in VPS `.env` (loaded by `alert.send_discord`). Missing or emp
 |---|---|---|---|---|
 | `DISCORD_WEBHOOK_URL` | `#trading-signals` | `1492314707372150814` | `signal`, `liq_collector` | ✅ active |
 | `DISCORD_WEBHOOK_URL_PM` | `#pm-price-alert` | `1492688541405413396` | `pm_collector` | 🔇 silenced 2026-05-07 |
-| `DISCORD_WEBHOOK_URL_PM_DUAL` | `#pm-dual-price` | `1493441980968075488` | `pm_dual` | 🔇 silenced 2026-05-07 |
-| `DISCORD_WEBHOOK_URL_SIGNAL_V3` | `#pm-trading-signals` | `1494415390875320330` | `signal-v3-contrarian`, `signal-v3-dir` | ✅ active |
+| `DISCORD_WEBHOOK_URL_PM_DUAL` | `#pm-dual-price` | `1493441980968075488` | `pm_dual` | ⏹ session stopped 2026-05-29 (was 🔇 silenced 2026-05-07) |
+| `DISCORD_WEBHOOK_URL_SIGNAL_V3` | `#pm-trading-signals` | `1494415390875320330` | `signal-v3-contrarian`, `signal-v3-dir` | ⏹ both sessions stopped 2026-05-29 |
 
 **Webhook silencing decision (2026-05-07):** `DISCORD_WEBHOOK_URL_PM` and `DISCORD_WEBHOOK_URL_PM_DUAL` were emptied in `.env` to silence the per-poll `pm_collector` price chatter and the per-arb `pm_dual` triggers — too noisy for the value they were providing. The underlying sessions keep running and persisting JSONL to disk (`data/pm_btcupdown/*.jsonl`, `data/pm_dual/*.jsonl`) as before; only the `send_discord` calls no-op. To re-enable later, restore the URL line in `.env` (a timestamped backup is on the VPS) and restart the affected session(s). `DISCORD_WEBHOOK_URL` (signal engine + liquidation alerts) and `DISCORD_WEBHOOK_URL_SIGNAL_V3` (V3 streams) remain active.
 
@@ -78,20 +84,20 @@ Webhook: `DISCORD_WEBHOOK_URL_PM`
 tmux new -d -s pm_collector "cd /root/trading_pm_data_feed && .venv/bin/python -m pm_btc15updown_data.collect_pm_btcupdown --log-dir data/pm_btcupdown"
 ```
 
-#### `pm_dual` — Polymarket dual-market arb tracker (since Apr 29, V2 keyset)
-Webhook: `DISCORD_WEBHOOK_URL_PM_DUAL`
+#### `pm_dual` — Polymarket dual-market arb tracker (since Apr 29, V2 keyset) — ⏹ STOPPED 2026-05-29
+Webhook: `DISCORD_WEBHOOK_URL_PM_DUAL`. Launch command kept for restart:
 ```bash
 tmux new -d -s pm_dual "cd /root/trading_pm_data_feed && .venv/bin/python -m pm_btc15updown_data.collect_pm_dual --log-dir data/pm_dual"
 ```
 
-#### `signal-v3-contrarian` — V3 contrarian live stream (since Apr 29, V2 keyset)
-Webhook: `DISCORD_WEBHOOK_URL_SIGNAL_V3`
+#### `signal-v3-contrarian` — V3 contrarian live stream (since Apr 29, V2 keyset) — ⏹ STOPPED 2026-05-29
+Webhook: `DISCORD_WEBHOOK_URL_SIGNAL_V3`. Launch command kept for restart:
 ```bash
 tmux new -d -s signal-v3-contrarian "cd /root/trading_pm_data_feed && .venv/bin/python -u -m pm_btc15updown_data.signal_stream_v3 --db data/btcusdt_perp_1m.sqlite --artifact-dir data/artifacts_v3"
 ```
 
-#### `signal-v3-dir` — V3 directional live stream (since Apr 29, V2 keyset)
-Webhook: `DISCORD_WEBHOOK_URL_SIGNAL_V3`
+#### `signal-v3-dir` — V3 directional live stream (since Apr 29, V2 keyset) — ⏹ STOPPED 2026-05-29
+Webhook: `DISCORD_WEBHOOK_URL_SIGNAL_V3`. Launch command kept for restart:
 ```bash
 tmux new -d -s signal-v3-dir "cd /root/trading_pm_data_feed && .venv/bin/python -u -m pm_btc15updown_data.signal_stream_v3_directional --db data/btcusdt_perp_1m.sqlite --artifact-dir data/artifacts_v3"
 ```
@@ -143,12 +149,13 @@ Watch list: [Coinbase Exchange API changelog](https://docs.cdp.coinbase.com/exch
 | `btc_depth` tmux | Binance `depth20@500ms` WSS |
 | `liq_collector` tmux | Binance `forceOrder` WSS |
 | `pm_collector` tmux | Polymarket Gamma + CLOB + WSS market · Binance `depth20@500ms` WSS · Binance FAPI `/klines` |
-| `pm_dual` tmux | Polymarket Gamma + CLOB · Binance FAPI `/klines` |
-| `signal-v3-contrarian`, `signal-v3-dir` tmux | Binance `kline_1m` WSS · Polymarket Gamma + CLOB · Binance FAPI `/klines` · SQLite warmup · daily v3 artifact |
+| `pm_dual` tmux ⏹ stopped 2026-05-29 | Polymarket Gamma + CLOB · Binance FAPI `/klines` |
+| `signal-v3-contrarian`, `signal-v3-dir` tmux ⏹ stopped 2026-05-29 | Binance `kline_1m` WSS · Polymarket Gamma + CLOB · Binance FAPI `/klines` · SQLite warmup · daily v3 artifact |
 | `accumulate_1m` cron | Binance FAPI `/klines` |
 | `coinbase_accumulate_1m` cron | Coinbase Exchange `/candles` |
 | `repair_gaps_1m` cron | Binance FAPI `/klines` |
-| `build_daily_artifact`, `build_daily_artifact_v3` cron | SQLite only (no external) |
+| `build_daily_artifact_v3` cron | SQLite only (no external) — output feeds downstream live trading system |
+| `build_daily_artifact` cron ⏹ stopped 2026-05-29 | SQLite only (no external) |
 | `pm_metadata` fetcher (manual) | Polymarket Gamma `/events/keyset` |
 
 ### Review reminder
