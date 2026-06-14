@@ -5,7 +5,7 @@ Snapshot of what runs on `vps-madrid` and where the code lives. Keep in sync whe
 Last verified: 2026-06-13 (deployed `pm_shock` shock-continuation sim stream — see changelog)
 
 **Changelog**
-- **2026-06-14** — `btc_depth` sampling cadence **5s → 1s** (`--sample-interval 1`) for finer depth archive. WS already pushes at 500ms, so this only persists more snapshots (~5× volume — watch disk/backups). `pm_collector` 1s was evaluated separately (REST rate-limit test).
+- **2026-06-14** — Collection cadence **5s → 1s** for finer archives: `btc_depth` (`--sample-interval 1`; WS already at 500ms) and `pm_collector` (`--poll-interval 1`). Both ~5× JSONL volume — watch disk/backups. `pm_collector` 1s confirmed safe: `/book` REST limit is 1,500 req/10s (150/s); 1s poll = 2 req/s ≈ 1.3% of limit, and over-limit is throttled not 429 ([docs](https://docs.polymarket.com/api-reference/rate-limits)). Live 30s burst test: 60/60 OK, 0 throttle, ~0.1s latency.
 - **2026-06-13** — Deployed `pm_shock` (PM 15updown shock-continuation **sim**; `pm_shock_signal.scripts.run_shock_signal`) as a new tmux session, live. Sim-only (no real orders) — forward, out-of-sample, spread-aware validation of the `btc_depth_15updown` backtest edge. Reuses the `#pm-trading-signals` channel via a new `DISCORD_WEBHOOK_URL_PM_SHOCK` key (= `DISCORD_WEBHOOK_URL_SIGNAL_V3` value). `.env` backed up to `/root/trading_pm_data_feed/.env.bak.pmshock.*`. Code vendored into the prod working tree from origin `a1359a9` (subtree checkout, prod deploy commit `4035154`).
 - **2026-05-29** — Stopped 4 streams: `pm_dual` tmux, `signal-v3-contrarian` tmux, `signal-v3-dir` tmux, and the v1 `build_daily_artifact` cron (commented out, crontab backed up to `/root/crontab.bak.20260529-153845`). The v3 artifact cron (`build_daily_artifact_v3`) stays running — it feeds a downstream **live trading system**, not the now-stopped V3 signal streams.
 - **2026-04-29** — V2 keyset migration restart.
@@ -84,9 +84,9 @@ tmux new -d -s liq_collector "cd /root/trading_pm_data_feed && .venv/bin/python 
 ```
 
 #### `pm_collector` — Polymarket single-market BTC up/down (since Apr 29, V2 keyset)
-Webhook: `DISCORD_WEBHOOK_URL_PM`
+Webhook: `DISCORD_WEBHOOK_URL_PM` (silenced)  ·  Cadence: **1s** since 2026-06-14 (`--poll-interval 1`; was 5s). REST `/book` 2 req/poll ≈ 2 req/s, ~1.3% of the 1,500 req/10s limit.
 ```bash
-tmux new -d -s pm_collector "cd /root/trading_pm_data_feed && .venv/bin/python -m pm_btc15updown_data.collect_pm_btcupdown --log-dir data/pm_btcupdown"
+tmux new -d -s pm_collector "cd /root/trading_pm_data_feed && .venv/bin/python -m pm_btc15updown_data.collect_pm_btcupdown --log-dir data/pm_btcupdown --poll-interval 1"
 ```
 
 #### `pm_shock` — PM 15updown shock-continuation sim (since Jun 13) — ✅ ACTIVE
