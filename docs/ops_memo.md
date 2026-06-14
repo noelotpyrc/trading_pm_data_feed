@@ -30,7 +30,7 @@ Last verified: 2026-06-13 (deployed `pm_shock` shock-continuation sim stream —
 | `pm_btc15updown_data.signal_stream_v3` | Live V3 contrarian stream — triggers TTL≤2 prob>0.90/<0.10, 10 polls at 3s, sends only on real entry (delta>0.05), near-close both tokens | in-process ⏹ **stopped 2026-05-29** |
 | `pm_btc15updown_data.signal_stream_v3_directional` | Live V3 directional stream — 4 specific TTL/prob rules, 8 polls at 3s, near-close both tokens, JSONL log | in-process + `logs/signal_v3_directional.jsonl` ⏹ **stopped 2026-05-29** |
 | `btcusdt_perp_signal.scripts.run_signal_engine` | Signal engine + alerts | `data/signal_engine.log` |
-| `pm_shock_signal.scripts.run_shock_signal` | Live PM shock-continuation **sim** — fires shock+z_shock across the configured operating point(s) in `config.py` (currently 1: `d10_k12_z2_t60`), records spread-aware sim trades, alerts | `data/pm_shock_signal.sqlite`, `data/pm_shock_signal.log` — **active (deployed 2026-06-13)** |
+| `pm_shock_signal.scripts.run_shock_signal` | Live PM shock-continuation **sim** — fires shock+z_shock across the configured operating point(s) in `config.py` (currently 2: `d5_k12_z2_t60`, `d10_k12_z2_t60`), records spread-aware sim trades + a 5s forward price/book path per fire (`shock_price_path`, offsets 0..600s), alerts | `data/pm_shock_signal.sqlite`, `data/pm_shock_signal.log` — **active (deployed 2026-06-13)** |
 | `pm_shock_signal.scripts.resolve_outcomes` | Backfill `resolved_outcome` (Up/Down) on shock sim trades via Gamma `outcomePrices` | updates `data/pm_shock_signal.sqlite` — **manual pass** (run after windows close; could be cronned) |
 
 ## Running on VPS

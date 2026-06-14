@@ -20,7 +20,7 @@ from pm_shock_signal.shock_signal import (
     ShockDetector, compute_z_shock, z_from_inputs, FireEvent,
 )
 from pm_shock_signal.config import OperatingPoint
-from pm_shock_signal.sim import SimPositionManager
+from pm_shock_signal.sim import SimPositionManager, PricePathSampler, PathSample
 
 
 # --------------------------------------------------------------------------- #
@@ -273,6 +273,49 @@ def test_sim_not_due_stays_open():
 
 
 # --------------------------------------------------------------------------- #
+# forward price/book path sampler (REVIEW item 6)
+# --------------------------------------------------------------------------- #
+
+def test_price_path_offsets_and_values():
+    """Full 5s grid emits in order; values read as-of each sample time."""
+    E = 1_700_000_400
+    pm = FakePm(E, {"UP": {100: 0.20, 130: 0.30, 200: 0.35}}, ask=0.40, bid=0.38)
+    btc = FakeBtc(slope=0.001, rv=0.0001, t0=E)
+    ps = PricePathSampler(pm, btc)
+    ps.register(_fire(E, sec=100), signal_id=7)   # t_anchor = E+100
+
+    rows = [r for now in range(E + 100, E + 100 + 605) for r in ps.emit_due(now)]
+    # uniform 5s grid 0..600 all fit (100+600=700 <= 899)
+    assert [r.offset_s for r in rows] == list(range(0, 601, 5))
+    assert all(r.signal_id == 7 for r in rows)
+
+    r0 = rows[0]
+    assert r0.offset_s == 0 and r0.ts == E + 100
+    assert r0.pm_last == pytest.approx(0.20)
+    assert r0.pm_bid == pytest.approx(0.38) and r0.pm_ask == pytest.approx(0.40)
+    assert r0.btc_mid == pytest.approx(1.0 + 0.001 * 100)
+    # offset 30 → sample at E+130 → last-trade 0.30, fresh (age 0)
+    r30 = next(r for r in rows if r.offset_s == 30)
+    assert r30.pm_last == pytest.approx(0.30)
+    assert r30.pm_last_age_s == pytest.approx(0.0)
+    # offset 45 → sample E+145 → forward-filled from the 130 print, age 15
+    r45 = next(r for r in rows if r.offset_s == 45)
+    assert r45.pm_last == pytest.approx(0.30)
+    assert r45.pm_last_age_s == pytest.approx(15.0)
+    assert ps.active_count() == 0
+
+
+def test_price_path_capped_at_window_end():
+    """A late fire only samples offsets that land within the 15m window."""
+    E = 1_700_000_400
+    pm = FakePm(E, {"UP": {880: 0.50}}, ask=0.50, bid=0.49)
+    ps = PricePathSampler(pm, FakeBtc(0.0, 0.0001, E))
+    ps.register(_fire(E, sec=880), signal_id=9)   # t_anchor=E+880, window_end=E+899
+    rows = [r for now in range(E + 880, E + 880 + 40) for r in ps.emit_due(now)]
+    assert [r.offset_s for r in rows] == [0, 5, 10, 15]   # 880+20=900 > 899 dropped
+
+
+# --------------------------------------------------------------------------- #
 # DB schema + resolved_outcome backfill helpers
 # --------------------------------------------------------------------------- #
 
@@ -298,6 +341,30 @@ def test_db_roundtrip_and_resolve(tmp_path):
     assert signal_db.epochs_needing_resolution(db) == [E]
     assert signal_db.set_resolved_outcome(db, E, "Up") == 1
     assert signal_db.epochs_needing_resolution(db) == []
+
+
+def test_db_price_path_roundtrip(tmp_path):
+    from pm_shock_signal import signal_db
+    import sqlite3
+    db = tmp_path / "p.sqlite"
+    signal_db.ensure_tables(db)
+    samples = [
+        PathSample(signal_id=1, offset_s=0, ts=100.0, pm_last=0.20, pm_bid=0.19,
+                   pm_ask=0.21, pm_last_age_s=0.0, btc_mid=64000.0),
+        PathSample(signal_id=1, offset_s=5, ts=105.0, pm_last=0.22, pm_bid=0.21,
+                   pm_ask=0.23, pm_last_age_s=1.0, btc_mid=64010.0),
+    ]
+    assert signal_db.insert_path_samples(db, samples) == 2
+    assert signal_db.insert_path_samples(db, []) == 0
+    con = sqlite3.connect(str(db))
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        f"SELECT * FROM {signal_db.PRICE_PATH_TABLE} ORDER BY offset_s"
+    ).fetchall()
+    assert [r["offset_s"] for r in rows] == [0, 5]
+    assert rows[1]["pm_last"] == pytest.approx(0.22)
+    assert rows[1]["btc_mid"] == pytest.approx(64010.0)
+    con.close()
 
 
 # --------------------------------------------------------------------------- #

@@ -18,6 +18,7 @@ from pathlib import Path
 
 SIGNALS_TABLE = "shock_signals"
 SIM_TRADES_TABLE = "shock_sim_trades"
+PRICE_PATH_TABLE = "shock_price_path"
 
 
 def _now() -> str:
@@ -86,9 +87,27 @@ def ensure_tables(db_path: Path) -> None:
             f"CREATE INDEX IF NOT EXISTS idx_{SIGNALS_TABLE}_epoch_ts "
             f"ON {SIGNALS_TABLE}(epoch_start, fire_ts);"
         )
+        con.execute(f"""
+            CREATE TABLE IF NOT EXISTS {PRICE_PATH_TABLE} (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id     INTEGER NOT NULL,
+                offset_s      INTEGER NOT NULL,
+                ts            REAL,
+                pm_last       REAL,
+                pm_bid        REAL,
+                pm_ask        REAL,
+                pm_last_age_s REAL,
+                btc_mid       REAL,
+                FOREIGN KEY (signal_id) REFERENCES {SIGNALS_TABLE}(id)
+            );
+        """)
         con.execute(
             f"CREATE INDEX IF NOT EXISTS idx_{SIM_TRADES_TABLE}_signal "
             f"ON {SIM_TRADES_TABLE}(signal_id);"
+        )
+        con.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{PRICE_PATH_TABLE}_sig "
+            f"ON {PRICE_PATH_TABLE}(signal_id, offset_s);"
         )
         con.commit()
     finally:
@@ -169,6 +188,28 @@ def mark_trade_exit_alerted(db_path: Path, trade_id: int) -> None:
     try:
         con.execute(f"UPDATE {SIM_TRADES_TABLE} SET exit_alerted = 1 WHERE id = ?", (trade_id,))
         con.commit()
+    finally:
+        con.close()
+
+
+def insert_path_samples(db_path: Path, samples) -> int:
+    """Bulk-insert forward price-path rows (REVIEW item 6). `samples` is an iterable of
+    objects with attrs: signal_id, offset_s, ts, pm_last, pm_bid, pm_ask, pm_last_age_s,
+    btc_mid. Returns the number inserted."""
+    rows = [(s.signal_id, s.offset_s, s.ts, s.pm_last, s.pm_bid, s.pm_ask,
+             s.pm_last_age_s, s.btc_mid) for s in samples]
+    if not rows:
+        return 0
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.executemany(
+            f"""INSERT INTO {PRICE_PATH_TABLE}
+                (signal_id, offset_s, ts, pm_last, pm_bid, pm_ask, pm_last_age_s, btc_mid)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        con.commit()
+        return len(rows)
     finally:
         con.close()
 

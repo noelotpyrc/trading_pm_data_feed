@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from pm_shock_signal import config
-from pm_shock_signal.feeds import PmTokenFeed
+from pm_shock_signal.feeds import BtcMidFeed, PmTokenFeed
 from pm_shock_signal.shock_signal import FireEvent
 
 
@@ -128,3 +128,77 @@ class SimPositionManager:
 
     def open_count(self) -> int:
         return len(self._open)
+
+
+# --------------------------------------------------------------------------- #
+# Forward price/book path sampler (REVIEW item 6)
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class PathSample:
+    """One forward-trajectory sample for a fired signal → shock_price_path row."""
+    signal_id: int
+    offset_s: int             # seconds after entry (t_anchor); 0 = entry
+    ts: float                 # sample time (epoch s) = t_anchor + offset_s
+    pm_last: Optional[float]
+    pm_bid: Optional[float]
+    pm_ask: Optional[float]
+    pm_last_age_s: Optional[float]
+    btc_mid: Optional[float]
+
+
+@dataclass
+class _PathTrack:
+    signal_id: int
+    token_id: str
+    t_anchor: float
+    pending: list[int]        # offsets not yet emitted, ascending
+
+
+class PricePathSampler:
+    """Per-fire forward sampler. On register, schedules the config.PATH_OFFSETS_S grid
+    (capped to the window end); each tick, emits a PathSample for every offset whose
+    sample time has arrived. The surging token's market is read as-of the sample time
+    (PM last/age via price_asof, BTC mid via mid_at) with the freshest top-of-book."""
+
+    def __init__(self, pm: PmTokenFeed, btc: BtcMidFeed) -> None:
+        self.pm = pm
+        self.btc = btc
+        self._tracks: list[_PathTrack] = []
+
+    def register(self, fire: FireEvent, signal_id: int) -> None:
+        window_end_ts = fire.epoch_start + config.WINDOW_END_SEC
+        pending = [o for o in config.PATH_OFFSETS_S if fire.fire_ts + o <= window_end_ts]
+        if pending:
+            self._tracks.append(_PathTrack(signal_id, fire.token_id, fire.fire_ts, pending))
+
+    def emit_due(self, now_ts: float) -> list[PathSample]:
+        """Emit samples for every scheduled offset whose time (t_anchor+offset) <= now."""
+        out: list[PathSample] = []
+        for tr in self._tracks:
+            still = []
+            for o in tr.pending:
+                sample_t = tr.t_anchor + o
+                if sample_t <= now_ts:
+                    out.append(self._sample(tr, o, sample_t))
+                else:
+                    still.append(o)
+            tr.pending = still
+        self._tracks = [t for t in self._tracks if t.pending]
+        return out
+
+    def _sample(self, tr: _PathTrack, offset_s: int, sample_t: float) -> PathSample:
+        asof = self.pm.price_asof(tr.token_id, sample_t)
+        pm_last = asof[1] if asof is not None else None
+        pm_last_age_s = (sample_t - asof[0]) if asof is not None else None
+        top = self.pm.book_top(tr.token_id)
+        pm_bid = top.bid if top is not None else None
+        pm_ask = top.ask if top is not None else None
+        return PathSample(
+            signal_id=tr.signal_id, offset_s=offset_s, ts=sample_t,
+            pm_last=pm_last, pm_bid=pm_bid, pm_ask=pm_ask,
+            pm_last_age_s=pm_last_age_s, btc_mid=self.btc.mid_at(sample_t),
+        )
+
+    def active_count(self) -> int:
+        return len(self._tracks)

@@ -34,7 +34,7 @@ from pm_shock_signal import alert, config, signal_db
 from pm_shock_signal.config import OperatingPoint
 from pm_shock_signal.feeds import BtcMidFeed, PmTokenFeed
 from pm_shock_signal.shock_signal import ShockDetector
-from pm_shock_signal.sim import SimPositionManager
+from pm_shock_signal.sim import SimPositionManager, PricePathSampler
 from pm_btc15updown_data.collect_pm_btcupdown import current_epoch_ts
 from btcusdt_perp_signal.alert import _load_env
 
@@ -97,6 +97,7 @@ def run(db_path: Path, dry_run: bool, relax: bool = False) -> int:
     ops = RELAXED_OPS if relax else None
     detector = ShockDetector(btc, pm, ops=ops)
     sim = SimPositionManager(pm)
+    path_sampler = PricePathSampler(pm, btc)
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
@@ -137,6 +138,12 @@ def run(db_path: Path, dry_run: bool, relax: bool = False) -> int:
                 if alert.send_entry(fire, dry_run=dry_run):
                     signal_db.mark_signal_alerted(db_path, sid)
                 sim.open_position(fire, sid)
+                path_sampler.register(fire, sid)
+
+            # Forward price/book path: emit any offsets whose time has arrived.
+            due_samples = path_sampler.emit_due(now)
+            if due_samples:
+                signal_db.insert_path_samples(db_path, due_samples)
 
             for trade in sim.close_due(now):
                 tid = signal_db.insert_sim_trade(
