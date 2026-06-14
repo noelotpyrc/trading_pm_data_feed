@@ -5,6 +5,7 @@ Snapshot of what runs on `vps-madrid` and where the code lives. Keep in sync whe
 Last verified: 2026-06-13 (deployed `pm_shock` shock-continuation sim stream — see changelog)
 
 **Changelog**
+- **2026-06-14** — `btc_depth` sampling cadence **5s → 1s** (`--sample-interval 1`) for finer depth archive. WS already pushes at 500ms, so this only persists more snapshots (~5× volume — watch disk/backups). `pm_collector` 1s was evaluated separately (REST rate-limit test).
 - **2026-06-13** — Deployed `pm_shock` (PM 15updown shock-continuation **sim**; `pm_shock_signal.scripts.run_shock_signal`) as a new tmux session, live. Sim-only (no real orders) — forward, out-of-sample, spread-aware validation of the `btc_depth_15updown` backtest edge. Reuses the `#pm-trading-signals` channel via a new `DISCORD_WEBHOOK_URL_PM_SHOCK` key (= `DISCORD_WEBHOOK_URL_SIGNAL_V3` value). `.env` backed up to `/root/trading_pm_data_feed/.env.bak.pmshock.*`. Code vendored into the prod working tree from origin `a1359a9` (subtree checkout, prod deploy commit `4035154`).
 - **2026-05-29** — Stopped 4 streams: `pm_dual` tmux, `signal-v3-contrarian` tmux, `signal-v3-dir` tmux, and the v1 `build_daily_artifact` cron (commented out, crontab backed up to `/root/crontab.bak.20260529-153845`). The v3 artifact cron (`build_daily_artifact_v3`) stays running — it feeds a downstream **live trading system**, not the now-stopped V3 signal streams.
 - **2026-04-29** — V2 keyset migration restart.
@@ -71,9 +72,9 @@ tmux new -d -s signal "cd /root/trading_pm_data_feed && .venv/bin/python -m btcu
 ```
 
 #### `btc_depth` — Binance orderbook depth logger (since Apr 13)
-Webhook: —
+Webhook: —  ·  Cadence: **1s** since 2026-06-14 (`--sample-interval 1`; was 5s). Underlying WS is `depth20@500ms`.
 ```bash
-tmux new -d -s btc_depth "cd /root/trading_pm_data_feed && .venv/bin/python -m cex_data_feed.scripts.collect_btc_depth --log-dir data/btc_depth"
+tmux new -d -s btc_depth "cd /root/trading_pm_data_feed && .venv/bin/python -m cex_data_feed.scripts.collect_btc_depth --log-dir data/btc_depth --sample-interval 1"
 ```
 
 #### `liq_collector` — Binance liquidation stream (since Apr 17)
