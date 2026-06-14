@@ -2,7 +2,7 @@
 
 Snapshot of what runs on `vps-madrid` and where the code lives. Keep in sync when adding/removing a stream.
 
-Last verified: 2026-06-13 (deployed `pm_shock` shock-continuation sim stream — see changelog)
+Last verified: 2026-06-14 (btc_depth + pm_collector → 1s cadence; 5 tmux sessions + cron checked against live VPS — see changelog)
 
 **Changelog**
 - **2026-06-14** — Collection cadence **5s → 1s** for finer archives: `btc_depth` (`--sample-interval 1`; WS already at 500ms) and `pm_collector` (`--poll-interval 1`). Both ~5× JSONL volume — watch disk/backups. `pm_collector` 1s confirmed safe: `/book` REST limit is 1,500 req/10s (150/s); 1s poll = 2 req/s ≈ 1.3% of limit, and over-limit is throttled not 429 ([docs](https://docs.polymarket.com/api-reference/rate-limits)). Live 30s burst test: 60/60 OK, 0 throttle, ~0.1s latency.
@@ -18,9 +18,9 @@ Last verified: 2026-06-13 (deployed `pm_shock` shock-continuation sim stream —
 | `cex_data_feed.scripts.accumulate_1m` | 1m BTCUSDT perp OHLCV (Binance) | `data/btcusdt_perp_1m.sqlite` |
 | `cex_data_feed.scripts.repair_gaps_1m` | Daily gap scan/repair | same DB |
 | `cex_data_feed.scripts.coinbase_accumulate_1m` | 1m BTC-USD spot OHLCV (Coinbase) | `data/btcusd_coinbase_1m.sqlite` |
-| `cex_data_feed.scripts.collect_btc_depth` | Orderbook depth logger | `data/btc_depth/` |
+| `cex_data_feed.scripts.collect_btc_depth` | Orderbook depth logger (depth20@500ms WS, **1s** sampling since 2026-06-14) | `data/btc_depth/` |
 | `cex_data_feed.scripts.collect_liquidations` | Liquidation stream | `data/liquidations/` |
-| `pm_btc15updown_data.collect_pm_btcupdown` | Polymarket single-market | `data/pm_btcupdown/` |
+| `pm_btc15updown_data.collect_pm_btcupdown` | Polymarket single-market (CLOB `/book`, **1s** poll since 2026-06-14) | `data/pm_btcupdown/` |
 | `pm_btc15updown_data.collect_pm_dual` | Polymarket dual-market | `data/pm_dual/` ⏹ **stopped 2026-05-29** |
 
 ### Artifacts / signals
@@ -49,7 +49,7 @@ Coinbase runs offset (`2-57/5`) so it doesn't collide with the Binance accumulat
 ### Long-running (tmux — one session per process)
 List: `ssh vps-madrid tmux ls`  ·  Attach: `ssh vps-madrid -t tmux attach -t <session>`
 
-**Expected sessions as of 2026-06-13:** `signal`, `btc_depth`, `liq_collector`, `pm_collector`, `pm_shock` (5 active). Stopped: `pm_dual`, `signal-v3-contrarian`, `signal-v3-dir` (launch commands kept below for restart).
+**Expected sessions as of 2026-06-14:** `signal`, `btc_depth`, `liq_collector`, `pm_collector`, `pm_shock` (5 active). Stopped: `pm_dual`, `signal-v3-contrarian`, `signal-v3-dir` (launch commands kept below for restart).
 
 Each block below is the full launch command; copy-paste it directly into the VPS shell to (re)create the session detached. All commands assume the project venv at `/root/trading_pm_data_feed/.venv`.
 
