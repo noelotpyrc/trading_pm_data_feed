@@ -233,20 +233,30 @@ def test_capture_cofire_shares_capture(tmp_path):
 # Discord settlement PnL formatter
 # --------------------------------------------------------------------------- #
 
-def test_fmt_window_settlement_pnl():
+def test_fmt_window_tau_and_expiry_pnl():
+    """τ60 / τ120 from the captured book + hold-to-expiry from settlement (REVIEW P1b)."""
     res = {"epoch_start": E, "token": "Up", "resolved": 1, "winner": 1, "final_price": 0.98}
-    fires = [
-        {"config_id": "trailmean_w60_k150", "sec": 120, "ratio": 1.55, "p_entry": 0.62, "entry_ask": 0.63},
-        {"config_id": "asym_2_5_40_k150", "sec": 130, "ratio": 1.71, "p_entry": 0.66, "entry_ask": 0.67},
-    ]
-    msg = _fmt_window(res, fires)
-    assert "WIN" in msg and "Up" in msg
-    assert "trailmean_w60_k150" in msg and "asym_2_5_40_k150" in msg
-    # winner → settle 1.0 → net_exp = 1.0 − 0.63 = +0.370
-    assert "net_exp=+0.370" in msg
-    # a pin shows no settlement PnL
-    res_pin = {**res, "resolved": 0, "winner": 0, "final_price": 0.55}
-    assert "PIN" in _fmt_window(res_pin, fires)
+    fires = [{"config_id": "trailmean_w60_k150", "sec": 120, "ratio": 1.55,
+              "p_entry": 0.62, "entry_ask": 0.63, "local_ts": float(E + 120)}]
+    book = [(float(E + 180), 0.66, 0.68), (float(E + 240), 0.70, 0.72)]   # samples at +60 / +120
+    msg = _fmt_window(res, fires, book)
+    assert "WIN" in msg and "trailmean_w60_k150" in msg
+    assert "τ60: net=+0.030 gross=+0.050" in msg     # 0.66−0.63 ; mid(0.67)−0.62
+    assert "τ120: net=+0.070 gross=+0.090" in msg    # 0.70−0.63 ; mid(0.71)−0.62
+    assert "exp: net=+0.370 gross=+0.380" in msg     # settle 1.0 − 0.63 / − 0.62
+
+
+def test_fmt_window_pin_expiry_na():
+    """Pin → expiry P&L is n/a; τ exits still compute from the book where a sample exists."""
+    res = {"epoch_start": E, "token": "Up", "resolved": 0, "winner": 0, "final_price": 0.55}
+    fires = [{"config_id": "asym_2_5_40_k150", "sec": 100, "ratio": 1.6,
+              "p_entry": 0.55, "entry_ask": 0.56, "local_ts": float(E + 100)}]
+    book = [(float(E + 160), 0.58, 0.60)]            # τ60 sample only
+    msg = _fmt_window(res, fires, book)
+    assert "PIN" in msg
+    assert "τ60: net=+0.020 gross=+0.040" in msg     # 0.58−0.56 ; mid(0.59)−0.55
+    assert "τ120: n/a" in msg                         # no +120 book sample, pin → no settle fallback
+    assert "exp: n/a" in msg
 
 
 def test_dry_run_sweep_non_destructive(tmp_path):

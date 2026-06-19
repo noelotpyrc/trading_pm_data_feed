@@ -195,6 +195,19 @@ def fetch_window_for_alert(db_path: Path, epoch_start: int, token: str):
         con.close()
 
 
+def fetch_book_path(db_path: Path, capture_id: int):
+    """Post-fire book path for a capture: [(local_ts, bid, ask), ...] ordered by local_ts.
+    Used by the Discord report to find the exit bid/ask at each τ (all fires in an
+    (epoch, token) share one capture, so fetch once)."""
+    con = sqlite3.connect(str(db_path))
+    try:
+        return con.execute(
+            "SELECT local_ts, bid, ask FROM raw_pm_book WHERE capture_id=? ORDER BY local_ts",
+            (capture_id,)).fetchall()
+    finally:
+        con.close()
+
+
 def mark_window_alerted(db_path: Path, epoch_start: int, token: str) -> None:
     con = sqlite3.connect(str(db_path))
     try:

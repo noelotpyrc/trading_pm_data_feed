@@ -33,13 +33,48 @@ def _webhook_configured() -> bool:
     return bool(os.environ.get(config.DISCORD_ENV_KEY) or os.environ.get(_FALLBACK_KEY))
 
 
-def _fmt_window(res, fires) -> str:
-    """One merged message: configs that fired + per-config entry refs + outcome + settlement PnL.
+def _pnl_at_tau(fire, tau, book_path, settle):
+    """(net, gross) for exiting `fire` at +tau seconds. net = exit_bid − entry_ask (sell into the bid);
+    gross = exit_mid − p_entry. Exit price = first book sample at/after fire.local_ts+tau. Falls back to
+    settlement when the τ exit would land past window end (rides to resolution) or no book sample exists
+    — matching the offline resolution-fill. (None, None) if no usable price."""
+    entry_ask = fire["entry_ask"]
+    p = fire["p_entry"]
+    if (fire["sec"] + tau) < config.WINDOW_END_SEC:
+        exit_local = fire["local_ts"] + tau
+        for lts, bid, ask in book_path:
+            if lts >= exit_local:
+                mid = (bid + ask) / 2 if (bid is not None and ask is not None) else None
+                net = (bid - entry_ask) if (bid is not None and entry_ask is not None) else None
+                gross = (mid - p) if (mid is not None and p is not None) else None
+                return net, gross
+    return _pnl_settle(fire, settle)   # too late to reach τ, or no book sample → ride to resolution
 
-    15updown tokens settle to 1.0 (win) / 0.0 (loss), so hold-to-expiry gross/net are exact from the
-    resolution + each fire's p_entry/entry_ask. τ=60 and other-τ fills are recomputed offline from the
-    raw_pm_* slice (not in the message).
-    """
+
+def _pnl_settle(fire, settle):
+    """(net, gross) held to expiry: settle (1/0) − entry_ask / − p_entry. (None, None) on a pin."""
+    if settle is None:
+        return None, None
+    net = (settle - fire["entry_ask"]) if fire["entry_ask"] is not None else None
+    gross = (settle - fire["p_entry"]) if fire["p_entry"] is not None else None
+    return net, gross
+
+
+def _seg(label, net, gross) -> str:
+    if net is None and gross is None:
+        return f"{label}: n/a"
+    parts = []
+    if net is not None:
+        parts.append(f"net={net:+.3f}")
+    if gross is not None:
+        parts.append(f"gross={gross:+.3f}")
+    return f"{label}: " + " ".join(parts)
+
+
+def _fmt_window(res, fires, book_path) -> str:
+    """One merged message: configs that fired + per-config entry refs + outcome, with P&L at each
+    τ in config.DISCORD_EXIT_TAUS AND hold-to-expiry (net + gross) so the scalp-exit vs held-to-settle
+    gap is visible (REVIEW P1b). τ exits use the captured raw_pm_book; expiry uses 1/0 settlement."""
     epoch = res["epoch_start"]
     token = res["token"]
     ts = datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
@@ -56,21 +91,16 @@ def _fmt_window(res, fires) -> str:
         + (f" · final `{final:.3f}`" if final is not None else ""),
     ]
     for f in sorted(fires, key=lambda r: r["sec"]):
-        pe = f["p_entry"]
-        ask = f["entry_ask"]
-        seg = f"  `{f['config_id']}` sec={f['sec']} ratio={f['ratio']:.3f}"
-        if pe is not None:
-            seg += f" p={pe:.3f}"
-        if ask is not None:
-            seg += f" ask={ask:.3f}"
-        if settle is not None:
-            g = (settle - pe) if pe is not None else None
-            n = (settle - ask) if ask is not None else None
-            if g is not None:
-                seg += f" → gross_exp={g:+.3f}"
-            if n is not None:
-                seg += f" net_exp={n:+.3f}"
-        lines.append(seg)
+        head = f"  `{f['config_id']}` sec={f['sec']} ratio={f['ratio']:.3f}"
+        if f["p_entry"] is not None:
+            head += f" p={f['p_entry']:.3f}"
+        if f["entry_ask"] is not None:
+            head += f" ask={f['entry_ask']:.3f}"
+        lines.append(head)
+        segs = [_seg(f"τ{tau}", *_pnl_at_tau(f, tau, book_path, settle))
+                for tau in config.DISCORD_EXIT_TAUS]
+        segs.append(_seg("exp", *_pnl_settle(f, settle)))
+        lines.append("    " + " · ".join(segs))
     return "\n".join(lines)
 
 
@@ -82,7 +112,8 @@ def sweep_and_alert(db_path: Path, dry_run: bool = False) -> int:
         res, fires = signal_db.fetch_window_for_alert(db_path, epoch, token)
         if res is None or not fires:
             continue
-        msg = _fmt_window(res, fires)
+        book_path = signal_db.fetch_book_path(db_path, fires[0]["capture_id"])  # shared per (epoch,token)
+        msg = _fmt_window(res, fires, book_path)
         if dry_run:
             # non-destructive: log only, do NOT mark — the window stays unalerted for a real run later
             log.info("[dry-run] %s", msg.replace("\n", " | "))
