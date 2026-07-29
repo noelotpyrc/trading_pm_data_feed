@@ -8,8 +8,9 @@ duplicated. Binance slices key by epoch (shared across both tokens) — staged o
 
 Every staged record carries (local_ts, event_ts):
   - PM trades  : lookback + forward from pm.trades_since (carries the original receipt `recv`).
-  - PM book TOP: forward sampling of pm.book_top each tick (best bid/ask; sizes not tracked by the
-                 base feed → NULL). local_ts = now (sample), event_ts = book update receipt.
+  - PM book TOP: lookback + forward cursor dump from pm.book_since (best bid/ask + SIZES). Kept at
+                 500ms within any fire's [fire, fire+5s] reaction window, thinned to ~1s elsewhere
+                 (LIVE_TEST_SPEC §1.1/§1.2/§1.3). local_ts = event_ts = the book-update receipt.
   - BTC depth20: lookback + forward from btc_depth.snapshots_since (frame carries its receipt local_ts).
   - BTC tick   : forward sampling of btc.mid_now each tick (mid only; bookTicker bid/ask not retained
                  by the reused BtcMidFeed → NULL). Lookback BTC mid is reconstructable offline from
@@ -34,7 +35,9 @@ class CaptureManager:
         self._tokid: dict[tuple[int, str], str] = {}        # (epoch, token) -> token_id
         self._pulled_pm: dict[tuple[int, str], float] = {}  # last trade event_ts staged
         self._pulled_btc: dict[int, float] = {}             # last depth frame ts staged (per epoch)
-        self._book_now: dict[tuple[int, str], float] = {}   # last book-sample now (dedup co-fires)
+        self._pulled_book: dict[tuple[int, str], float] = {}   # last book-history recv staged (cursor)
+        self._last_book_kept: dict[tuple[int, str], float] = {}  # recv of last book row actually kept
+        self._fire_starts: dict[tuple[int, str], list] = {}    # fire local_ts's → reaction windows
         self._tick_now: dict[int, float] = {}               # last btc-tick-sample now (per epoch)
 
     # ---- lifecycle ----
@@ -49,6 +52,10 @@ class CaptureManager:
         self._tokid[key] = fe.token_id
         self._pulled_pm.setdefault(key, t_back)
         self._pulled_btc.setdefault(fe.epoch_start, t_back)
+        # book cursor + thin-keep clock on the receipt (local) axis: dump [fire−L_BACK, fire) pre-fire.
+        self._pulled_book.setdefault(key, fe.local_ts - config.L_BACK_SEC)
+        self._last_book_kept.setdefault(key, fe.local_ts - config.L_BACK_SEC - config.BOOK_SLOW_GAP_S)
+        self._fire_starts.setdefault(key, []).append(fe.local_ts)
         self._stage_pm(fe.epoch_start, fe.token, cid, fe.local_ts)
         self._stage_btc(fe.epoch_start, fe.local_ts)
         return cid
@@ -79,7 +86,9 @@ class CaptureManager:
             del self._cap[(e, token)]
             self._tokid.pop((e, token), None)
             self._pulled_pm.pop((e, token), None)
-            self._book_now.pop((e, token), None)
+            self._pulled_book.pop((e, token), None)
+            self._last_book_kept.pop((e, token), None)
+            self._fire_starts.pop((e, token), None)
         self._pulled_btc.pop(epoch, None)
         self._tick_now.pop(epoch, None)
 
@@ -98,14 +107,33 @@ class CaptureManager:
                 for (ev, price, size, side, recv) in new
             ])
             self._pulled_pm[key] = max(tr[0] for tr in new)
-        # book TOP: one forward sample per distinct now (dedup co-fires within the same tick)
-        if self._book_now.get(key) != now_ts:
-            top = self.pm.book_top(token_id)
-            if top is not None:
+        # book TOP + sizes: cursor dump from the feed's throttled history. 500ms within any fire's
+        # [fire, fire+5s] reaction window; thinned to ~1s elsewhere (incl. the pre-fire lookback).
+        cursor = self._pulled_book.get(key, now_ts - config.L_BACK_SEC)
+        rows = []
+        for (recv, bid, bid_sz, ask, ask_sz, ev) in self.pm.book_since(token_id, cursor):
+            self._pulled_book[key] = recv
+            if self._in_reaction(key, recv) or (
+                    recv - self._last_book_kept.get(key, recv) >= config.BOOK_SLOW_GAP_S):
+                rows.append((epoch, token, recv, ev, bid, bid_sz, ask, ask_sz))
+                self._last_book_kept[key] = recv
+        if rows:
+            signal_db.insert_raw_pm_book(self.db, cid, rows)
+        # keepalive: on a quiet book (no row kept in the last BOOK_SLOW_GAP_S), stamp the standing
+        # ladder top so ask_d5 always has a ~1s-fresh row, matching the old 1s-poll path (§5.4).
+        if now_ts - self._last_book_kept.get(key, now_ts) >= config.BOOK_SLOW_GAP_S:
+            ts = self.pm.book_top_sized(token_id)
+            if ts is not None:
+                bid, bid_sz, ask, ask_sz, ev_recv = ts
                 signal_db.insert_raw_pm_book(self.db, cid, [
-                    (epoch, token, now_ts, top.ts, top.bid, None, top.ask, None)
-                ])
-            self._book_now[key] = now_ts
+                    (epoch, token, now_ts, ev_recv if ev_recv is not None else now_ts,
+                     bid, bid_sz, ask, ask_sz)])
+                self._last_book_kept[key] = now_ts
+
+    def _in_reaction(self, key, recv: float) -> bool:
+        """True if `recv` falls in any of this capture's fires' [fire, fire+BOOK_REACTION_S] windows."""
+        return any(fs <= recv <= fs + config.BOOK_REACTION_S
+                   for fs in self._fire_starts.get(key, ()))
 
     def _stage_btc(self, epoch: int, now_ts: float) -> None:
         cursor = self._pulled_btc.get(epoch, now_ts - config.L_BACK_SEC)

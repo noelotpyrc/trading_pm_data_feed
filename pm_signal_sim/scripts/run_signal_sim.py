@@ -24,7 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from pm_signal_sim import config, signal_db
+from pm_signal_sim import config, signal_db, signals_live
 from pm_signal_sim.config import SignalConfig
 from pm_signal_sim.capture import CaptureManager
 from pm_signal_sim.discord_report import sweep_and_alert
@@ -73,6 +73,57 @@ def _resolve_window(db: Path, detector: MultiDetector, epoch: int, fired_tokens,
                  epoch, tok, fin, tok == win, resolved)
 
 
+def _drain_pending(db: Path, btc, pending: list, latency: dict, now: float) -> None:
+    """Evaluate any in-scope fire's S1/S2 (both due fire+3) and fill (due fire+5) whose horizon has
+    passed. `decided_at = max(newest input local_ts, fire+3)` (stamped by the evaluator) — the honest
+    time the value is knowable. S1/fill read the same book rows offline reads; S2 reads BTC mid."""
+    remaining = []
+    for p in pending:
+        fe = p["fe"]
+        if not p["s2_done"] and now >= p["s2_due"]:
+            ev = signals_live.eval_s2(fe, btc)
+            ev.eval_wall_ts = now
+            signal_db.insert_signal_eval(db, p["fire_id"], ev)
+            if ev.decided_at is not None:
+                p["decided_ats"].append(ev.decided_at)
+                latency.setdefault("z30_gate", []).append(ev.decided_at - fe.local_ts)
+            p["s2_done"] = True
+        if not p["s1_done"] and now >= p["s1_due"]:
+            ev = signals_live.eval_s1(fe, signal_db.fetch_book_full(db, p["cid"]))
+            ev.eval_wall_ts = now
+            signal_db.insert_signal_eval(db, p["fire_id"], ev)
+            if ev.decided_at is not None:
+                p["decided_ats"].append(ev.decided_at)
+                latency.setdefault("fade", []).append(
+                    ev.decided_at - (fe.local_ts + config.S1_HORIZON_S))
+            p["s1_done"] = True
+        if not p["fill_done"] and now >= p["fill_due"]:
+            fill = signals_live.compute_fill(fe, signal_db.fetch_book_full(db, p["cid"]))
+            if fill is not None:
+                fill_ts, fill_ask, fill_ask_sz = fill
+                dats = [d for d in p["decided_ats"] if d is not None]
+                margin = (fill_ts - max(dats)) if dats else None
+                signal_db.insert_fill_log(db, p["fire_id"], fill_ts, fill_ask, fill_ask_sz, margin)
+            p["fill_done"] = True
+        if not (p["s1_done"] and p["s2_done"] and p["fill_done"]):
+            remaining.append(p)
+    pending[:] = remaining
+
+
+def _log_heartbeat(latency: dict) -> None:
+    """Per-signal decision-latency histogram (LIVE_TEST_SPEC §3): fade = decided_at−(fire+3),
+    z30_gate = decided_at−fire. Then reset the buckets."""
+    parts = []
+    for sig in ("z30_gate", "fade"):
+        xs = sorted(latency.get(sig, []))
+        if xs:
+            p50 = xs[len(xs) // 2]
+            p90 = xs[min(len(xs) - 1, int(len(xs) * 0.9))]
+            parts.append(f"{sig}: n={len(xs)} p50={p50:.2f} p90={p90:.2f} max={xs[-1]:.2f}")
+        latency[sig] = []
+    log.info("HEARTBEAT latency %s", " · ".join(parts) if parts else "(no in-scope fires this period)")
+
+
 def _relaxed_configs() -> list[SignalConfig]:
     """Dev-only near-trivial thresholds (k≈1.01, no level floor) to force fires for the §8 E2E /
     capture check. NOT for real data."""
@@ -102,6 +153,10 @@ def run(db: Path, dry_run: bool, relax: bool = False) -> int:
     log.info("Engine started (dry_run=%s, configs=%s)", dry_run, [c.config_id for c in config.CONFIGS])
 
     last_epoch = None
+    pending: list = []          # in-scope fires awaiting S1 (fire+3) / fill (fire+5) evaluation
+    latency: dict = {"z30_gate": [], "fade": []}
+    strike_epochs: set = set()  # epochs with an epoch_strike row written
+    last_heartbeat = time.time()
     while not _shutdown:
         loop_start = time.time()
         try:
@@ -113,6 +168,8 @@ def run(db: Path, dry_run: bool, relax: bool = False) -> int:
                     fired = [tok for (e, tok) in list(capture._cap) if e == last_epoch]
                     _resolve_window(db, detector, last_epoch, fired, now)
                     capture.on_resolution(last_epoch)
+                    _drain_pending(db, btc, pending, latency, now)   # settle stragglers before dropping
+                    pending[:] = [p for p in pending if p["fe"].epoch_start != last_epoch]
                     sweep_and_alert(db, dry_run=dry_run)
                 pm.roll_market(epoch)
                 last_epoch = epoch
@@ -123,14 +180,35 @@ def run(db: Path, dry_run: bool, relax: bool = False) -> int:
             sec = int(now) - epoch
             tokens = [("Up", market.up_token_id), ("Down", market.down_token_id)]
 
+            # one epoch_strike row per epoch the engine is up, at epoch start (once BTC mid warms).
+            if epoch not in strike_epochs:
+                mid = btc.mid_now()
+                if mid is not None:
+                    signal_db.insert_epoch_strike(db, epoch, now, now, mid)
+                    strike_epochs.add(epoch)
+
             if 0 <= sec < config.WINDOW_SEC:
                 detector.update_grid(epoch, sec, tokens)
                 for fe in detector.on_tick(now, epoch, sec, tokens):
                     cid = capture.on_fire(fe)
-                    signal_db.insert_fire(db, cid, fe)
+                    fire_id = signal_db.insert_fire(db, cid, fe)
                     log.info("FIRE [%s] %s sec=%d ratio=%.3f p=%.3f ask=%s",
                              fe.config_id, fe.token, fe.sec, fe.ratio, fe.p_entry, fe.entry_ask)
+                    if signals_live.in_scope(fe.config_id, fe.sec):
+                        # S1 + S2 both decide at fire+3 (evaluated from the pending queue); fill+5.
+                        horizon_due = fe.local_ts + config.S1_HORIZON_S + config.EVAL_GUARD_S
+                        pending.append({
+                            "fire_id": fire_id, "fe": fe, "cid": cid,
+                            "s1_due": horizon_due, "s2_due": horizon_due,
+                            "fill_due": fe.local_ts + config.FILL_DELAY_S + config.EVAL_GUARD_S,
+                            "s1_done": False, "s2_done": False, "fill_done": False,
+                            "decided_ats": []})
                 capture.on_tick(now)
+                _drain_pending(db, btc, pending, latency, now)
+
+            if now - last_heartbeat >= config.HEARTBEAT_SEC:
+                _log_heartbeat(latency)
+                last_heartbeat = now
         except Exception:
             log.exception("engine tick error")
 

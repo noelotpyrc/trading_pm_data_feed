@@ -71,10 +71,46 @@ def _seg(label, net, gross) -> str:
     return f"{label}: " + " ".join(parts)
 
 
-def _fmt_window(res, fires, book_path) -> str:
+def _window_passes(sig_evals: dict) -> bool:
+    """True iff ≥1 in-scope fire passed S1 or S2 (LIVE_TEST_SPEC §2 filter)."""
+    return any(e["decision"] for evs in sig_evals.values() for e in evs)
+
+
+def _sig_block(f, evals, fill) -> str:
+    """Per-fire signal line (LIVE_TEST_SPEC §2 content): which signal(s) passed, their values,
+    decided_at (as +Δs from the fire), and the realized ask_d5 fill + tradability margin."""
+    by = {e["signal"]: e for e in evals}
+    segs = []
+    fade = by.get("fade")
+    if fade is not None:
+        v = fade["value"]
+        segs.append(("fade✓ " if fade["decision"] else "fade✗ ")
+                    + (f"d_mid3={v:+.4f}" if v is not None else "d_mid3=n/a"))
+    z = by.get("z30_gate")
+    if z is not None:
+        v = z["value"]
+        mark = "✓" if z["decision"] else "✗"
+        segs.append((f"z30={v:+.2f}{mark}" if v is not None else f"z30=n/a{mark}"))
+    if fill is not None:
+        seg = "d5=" + (f"{fill['fill_ask']:.3f}" if fill["fill_ask"] is not None else "n/a")
+        if fill["fill_ask_sz"] is not None:
+            seg += f"×{fill['fill_ask_sz']:.0f}"
+        if fill["margin_s"] is not None:
+            seg += f" mgn{fill['margin_s']:+.1f}s"
+        segs.append(seg)
+    dats = [e["decided_at"] for e in evals if e["decided_at"] is not None]
+    if dats:
+        segs.append(f"dec@+{max(dats) - f['local_ts']:.1f}s")
+    return "    ▸ " + " · ".join(segs)
+
+
+def _fmt_window(res, fires, book_path, sig_evals=None, fills=None) -> str:
     """One merged message: configs that fired + per-config entry refs + outcome, with P&L at each
     τ in config.DISCORD_EXIT_TAUS AND hold-to-expiry (net + gross) so the scalp-exit vs held-to-settle
-    gap is visible (REVIEW P1b). τ exits use the captured raw_pm_book; expiry uses 1/0 settlement."""
+    gap is visible (REVIEW P1b). τ exits use the captured raw_pm_book; expiry uses 1/0 settlement.
+    In-scope fires also get a signal block (LIVE_TEST_SPEC §2): S1/S2 pass, values, decided_at, fill."""
+    sig_evals = sig_evals or {}
+    fills = fills or {}
     epoch = res["epoch_start"]
     token = res["token"]
     ts = datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
@@ -101,11 +137,16 @@ def _fmt_window(res, fires, book_path) -> str:
                 for tau in config.DISCORD_EXIT_TAUS]
         segs.append(_seg("exp", *_pnl_settle(f, settle)))
         lines.append("    " + " · ".join(segs))
+        evals = sig_evals.get(f["id"]) if sig_evals else None
+        if evals:                                   # in-scope fire → signal block
+            lines.append(_sig_block(f, evals, fills.get(f["id"])))
     return "\n".join(lines)
 
 
 def sweep_and_alert(db_path: Path, dry_run: bool = False) -> int:
-    """Send one merged message per resolved-unalerted firing window. Returns count sent."""
+    """Send one merged message per resolved-unalerted firing window that has ≥1 in-scope fire passing
+    S1 or S2 (LIVE_TEST_SPEC §2). Windows with fires but no passing signal are marked silently.
+    Returns count sent."""
     configured = _webhook_configured()
     sent = 0
     for epoch, token in signal_db.unalerted_resolved_windows(db_path):
@@ -113,10 +154,18 @@ def sweep_and_alert(db_path: Path, dry_run: bool = False) -> int:
         if res is None or not fires:
             continue
         book_path = signal_db.fetch_book_path(db_path, fires[0]["capture_id"])  # shared per (epoch,token)
-        msg = _fmt_window(res, fires, book_path)
+        sig_evals = signal_db.fetch_signal_evals_for_window(db_path, epoch, token)
+        fills = signal_db.fetch_fill_log_for_window(db_path, epoch, token)
+        passes = _window_passes(sig_evals)
+        msg = _fmt_window(res, fires, book_path, sig_evals, fills)
         if dry_run:
             # non-destructive: log only, do NOT mark — the window stays unalerted for a real run later
-            log.info("[dry-run] %s", msg.replace("\n", " | "))
+            log.info("[dry-run]%s %s", "" if passes else " (filtered: no S1/S2 pass)",
+                     msg.replace("\n", " | "))
+            continue
+        if not passes:
+            # fires but no passing S1/S2 (or no in-scope fire) → mark silently, send nothing
+            signal_db.mark_window_alerted(db_path, epoch, token)
             continue
         if not configured:
             # real run, no webhook → mark anyway (logged) so we don't retry forever
