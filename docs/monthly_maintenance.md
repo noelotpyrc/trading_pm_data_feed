@@ -133,21 +133,13 @@ Sweep each vendor's changelog since the last "Last verified" date in [`ops_memo.
 
 Look for: deprecation cutovers, URL/path changes, auth or subscription changes, payload format changes. Bump the "Last verified" column in `ops_memo.md` when you confirm each endpoint is still healthy. If a streaming session's output file hasn't grown in >24h despite the process being alive, suspect a vendor change first.
 
-## 11. Check for patched kernel (CVE-2026-31431) — temporary, until done
+## 11. Kernel reboot (CVE-2026-31431) — ✅ resolved 2026-07-28
 
-Vultr advisory disclosed 2026-04-29 ("Copy Fail"). Mitigation already in place: `/etc/modprobe.d/cve-2026-31431.conf` on the VPS blacklists `algif_aead` so the vulnerable code path can't auto-load. A reboot into a properly-patched kernel is still pending — no kernel newer than `6.8.0-111` (released 2026-04-11, pre-disclosure) had reached our apt mirror at last check.
+Unattended-upgrades rebooted the VPS into kernel `6.8.0-136` (was `6.8.0-101`), well past the `6.8.0-111` threshold this step was waiting for. Nothing left to check monthly.
 
-Each monthly run, recheck:
+Leftover: `/etc/modprobe.d/cve-2026-31431.conf` still blacklists `algif_aead`. Harmless, but it can be removed if anything ever needs that module.
 
-```bash
-ssh vps-madrid "apt update && apt list --upgradable 2>/dev/null | grep -E 'linux-(image|generic|headers|cloud)' || echo '(no kernel upgrades pending)'"
-```
+**That reboot caused a 41h outage** — tmux sessions don't survive a reboot and DNS broke on the way up (see the [`ops_memo.md` changelog](ops_memo.md)). Two follow-ons:
 
-If a kernel newer than `6.8.0-111` appears, schedule a reboot:
-
-1. Run Step 1 above first (fresh DB snapshot to SSD) so we have a known-good restore point.
-2. `ssh vps-madrid "apt install -y linux-image-generic && reboot"`.
-3. After ~1 min, reconnect. Cron auto-resumes; **manually relaunch the 4 active tmux sessions** (`signal`, `btc_depth`, `liq_collector`, `pm_collector`) per [`ops_memo.md`](ops_memo.md). Each session has its full launch command in that file. (The stopped V3/`pm_dual` sessions are intentionally not relaunched — see the stopped-streams note at the top.)
-4. Verify pipelines are writing again — file mtimes in `data/btc_depth/`, `data/pm_btcupdown/`, etc. should be within a few minutes of "now".
-
-Once the upgrade + reboot is done and pipelines are healthy, **delete this section**.
+- After **any** reboot, manually relaunch the active tmux sessions per [`ops_memo.md`](ops_memo.md) — cron resumes on its own, tmux does not.
+- The [watchdog](ops_memo.md#monitoring) now catches this within ~20 min instead of days. Converting the tmux sessions to systemd units (auto-start on boot, auto-restart on crash) would remove the manual step entirely — not done yet.

@@ -2,9 +2,10 @@
 
 Snapshot of what runs on `vps-madrid` and where the code lives. Keep in sync when adding/removing a stream.
 
-Last verified: 2026-06-19 (swapped `pm_shock` → `pm_signal_sim` on the `#pm-trading-signals` webhook — see changelog)
+Last verified: 2026-07-29 (post-incident: DNS fixed, 4 streams relaunched, watchdog added — see changelog)
 
 **Changelog**
+- **2026-07-29** — **41h outage** (2026-07-28 01:24 → 2026-07-29 18:36 UTC). Unattended-upgrades rebooted the box (kernel `6.8.0-101` → `6.8.0-136`); the reboot killed the tmux server *and* left Tailscale MagicDNS owning `/etc/resolv.conf` in direct-takeover mode with no working upstream, so every public hostname failed to resolve. All collection stopped; cron accumulators looped on `Temporary failure in name resolution`. Fix: `tailscale set --accept-dns=false` (durable) + restored `/etc/resolv.conf` from `/etc/resolv.pre-tailscale-backup.conf` (Vultr `108.61.10.10` + Quad9 `9.9.9.9`). Relaunched `signal`, `btc_depth`, `liq_collector`, `pm_collector`; `pm_signal_sim` left down (being reworked). Both 1m OHLCV DBs **self-backfilled** the full gap on the first post-fix cron run; the ~41h of streaming data (depth / liquidations / PM book) is **permanently lost**. Added an off-box watchdog — see [Monitoring](#monitoring).
 - **2026-06-19** — Stopped `pm_shock` (tmux killed; DB `data/pm_shock_signal.sqlite` + launch block kept for restart) and deployed `pm_signal_sim` (`pm_signal_sim.scripts.run_signal_sim`) in its place, live. Multi-def 15updown collector + honest raw capture (reports 22–24). Reuses the **`#pm-trading-signals`** webhook: new `DISCORD_WEBHOOK_URL_PM_SIGNAL_SIM` = the `…_PM_SHOCK` value (which `pm_shock` vacated). `.env` backed up to `.env.bak.sigsim.*`. Code vendored from origin `4ac974b` (subtree checkout).
 - **2026-06-14** — Collection cadence **5s → 1s** for finer archives: `btc_depth` (`--sample-interval 1`; WS already at 500ms) and `pm_collector` (`--poll-interval 1`). Both ~5× JSONL volume — watch disk/backups. `pm_collector` 1s confirmed safe: `/book` REST limit is 1,500 req/10s (150/s); 1s poll = 2 req/s ≈ 1.3% of limit, and over-limit is throttled not 429 ([docs](https://docs.polymarket.com/api-reference/rate-limits)). Live 30s burst test: 60/60 OK, 0 throttle, ~0.1s latency.
 - **2026-06-13** — Deployed `pm_shock` (PM 15updown shock-continuation **sim**; `pm_shock_signal.scripts.run_shock_signal`) as a new tmux session, live. Sim-only (no real orders) — forward, out-of-sample, spread-aware validation of the `btc_depth_15updown` backtest edge. Reuses the `#pm-trading-signals` channel via a new `DISCORD_WEBHOOK_URL_PM_SHOCK` key (= `DISCORD_WEBHOOK_URL_SIGNAL_V3` value). `.env` backed up to `/root/trading_pm_data_feed/.env.bak.pmshock.*`. Code vendored into the prod working tree from origin `a1359a9` (subtree checkout, prod deploy commit `4035154`).
@@ -195,6 +196,20 @@ Run a vendor-changelog sweep monthly as part of [monthly maintenance](monthly_ma
 When you confirm an endpoint is still serving correctly, bump the "Last verified" column.
 
 **Soft-failure fingerprint** (what bit us on 2026-04-23): WSS handshake succeeds, process stays alive, but no frames are ever pushed. Heuristic: if a streaming session's expected output file goes more than 24h without growing, treat it as a probable vendor change until proven otherwise. The legacy `/ws/` Binance URL is the exemplar — connect succeeds, recv silently times out forever.
+
+## Monitoring
+
+`utils/vps_watchdog.sh` — polls the VPS every 10 min and alerts to Discord **`#pm-dual-price`** on failure.
+
+It runs on **leon-air4 (the Mac), not the VPS** — deliberately. A monitor on the box can't alert when the box is what broke: during the 2026-07-28 outage a VPS-local check would have had no DNS to reach Discord with, and would have sat silent. It reaches the VPS over Tailscale, which stayed up throughout.
+
+- Schedule: LaunchAgent `com.noel.vps-watchdog` (`~/Library/LaunchAgents/`), `StartInterval` 600s, survives reboot.
+- Checks: SSH reachable · public DNS resolves · every expected tmux session alive · perp/coinbase DB `max(timestamp)` < 15 min old · `btc_depth` + `pm_btcupdown` newest JSONL < 5 min old. `liq_collector` is liveness-only (event-driven — no liquidation, no write).
+- Alerts on **state change only** (one on break, one on recovery), and only after a problem repeats on **2 consecutive runs** — a laptop poller sees transient blips, so detection is 10–20 min rather than 10.
+- Webhook URL lives in `~/.config/vps-watchdog/webhook` (chmod 600, **not** in git and **not** the VPS `.env`). Missing file → checks still log, no alert sent.
+- Logs: `~/.config/vps-watchdog/watchdog.log`. Tunables (expected sessions, thresholds, interval) at the top of the script.
+
+**When adding or removing a stream, update `EXPECTED_SESSIONS` in the script.** `pm_signal_sim` is currently omitted (being reworked) — add it back on redeploy.
 
 ## Health checks
 
