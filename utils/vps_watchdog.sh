@@ -24,9 +24,9 @@ LOG_FILE="$CONF_DIR/watchdog.log"
 # become false alarms. Costs one extra interval of detection latency.
 CONFIRM_RUNS=2
 
-# Sessions that must be running. pm_signal_sim is intentionally NOT listed —
-# it's being reworked; add it back here when redeployed.
-EXPECTED_SESSIONS=(signal btc_depth liq_collector pm_collector)
+# Sessions that must be running.
+# pm_signal_sim re-added 2026-07-29 (live-test v2 redeploy).
+EXPECTED_SESSIONS=(signal btc_depth liq_collector pm_collector pm_signal_sim)
 
 # Staleness limits (seconds)
 DB_MAX_AGE=900       # cron accumulators run every 5 min

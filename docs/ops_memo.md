@@ -2,9 +2,10 @@
 
 Snapshot of what runs on `vps-madrid` and where the code lives. Keep in sync when adding/removing a stream.
 
-Last verified: 2026-07-29 (post-incident: DNS fixed, 4 streams relaunched, watchdog added — see changelog)
+Last verified: 2026-07-29 (post-incident: DNS fixed, all 5 streams relaunched incl. pm_signal_sim live-test v2, watchdog added — see changelog)
 
 **Changelog**
+- **2026-07-29 (later)** — Redeployed `pm_signal_sim` (live-test v2, origin `d524d60`, VPS deploy `4d11d7a`): pre-registered S1 `fade` / S2 `z30_gate` evaluated at fire+3s + `ask_d5` fill log; book rows now carry top-of-book **sizes**, 500ms sampling in [fire, fire+5s], 120s pre-fire book dump; new tables `epoch_strike` / `signal_evals` / `fill_log`; Discord sweep now only posts windows with a passing S1/S2 fire (see `pm_signal_sim/LIVE_TEST_SPEC.md`). tmux session relaunched; `pm_signal_sim` re-added to the watchdog `EXPECTED_SESSIONS`.
 - **2026-07-29** — **41h outage** (2026-07-28 01:24 → 2026-07-29 18:36 UTC). Unattended-upgrades rebooted the box (kernel `6.8.0-101` → `6.8.0-136`); the reboot killed the tmux server *and* left Tailscale MagicDNS owning `/etc/resolv.conf` in direct-takeover mode with no working upstream, so every public hostname failed to resolve. All collection stopped; cron accumulators looped on `Temporary failure in name resolution`. Fix: `tailscale set --accept-dns=false` (durable) + restored `/etc/resolv.conf` from `/etc/resolv.pre-tailscale-backup.conf` (Vultr `108.61.10.10` + Quad9 `9.9.9.9`). Relaunched `signal`, `btc_depth`, `liq_collector`, `pm_collector`; `pm_signal_sim` left down (being reworked). Both 1m OHLCV DBs **self-backfilled** the full gap on the first post-fix cron run; the ~41h of streaming data (depth / liquidations / PM book) is **permanently lost**. Added an off-box watchdog — see [Monitoring](#monitoring).
 - **2026-06-19** — Stopped `pm_shock` (tmux killed; DB `data/pm_shock_signal.sqlite` + launch block kept for restart) and deployed `pm_signal_sim` (`pm_signal_sim.scripts.run_signal_sim`) in its place, live. Multi-def 15updown collector + honest raw capture (reports 22–24). Reuses the **`#pm-trading-signals`** webhook: new `DISCORD_WEBHOOK_URL_PM_SIGNAL_SIM` = the `…_PM_SHOCK` value (which `pm_shock` vacated). `.env` backed up to `.env.bak.sigsim.*`. Code vendored from origin `4ac974b` (subtree checkout).
 - **2026-06-14** — Collection cadence **5s → 1s** for finer archives: `btc_depth` (`--sample-interval 1`; WS already at 500ms) and `pm_collector` (`--poll-interval 1`). Both ~5× JSONL volume — watch disk/backups. `pm_collector` 1s confirmed safe: `/book` REST limit is 1,500 req/10s (150/s); 1s poll = 2 req/s ≈ 1.3% of limit, and over-limit is throttled not 429 ([docs](https://docs.polymarket.com/api-reference/rate-limits)). Live 30s burst test: 60/60 OK, 0 throttle, ~0.1s latency.
@@ -209,7 +210,7 @@ It runs on **leon-air4 (the Mac), not the VPS** — deliberately. A monitor on t
 - Webhook URL lives in `~/.config/vps-watchdog/webhook` (chmod 600, **not** in git and **not** the VPS `.env`). Missing file → checks still log, no alert sent.
 - Logs: `~/.config/vps-watchdog/watchdog.log`. Tunables (expected sessions, thresholds, interval) at the top of the script.
 
-**When adding or removing a stream, update `EXPECTED_SESSIONS` in the script.** `pm_signal_sim` is currently omitted (being reworked) — add it back on redeploy.
+**When adding or removing a stream, update `EXPECTED_SESSIONS` in the script.** (`pm_signal_sim` re-added 2026-07-29 on the live-test v2 redeploy.)
 
 ## Health checks
 
