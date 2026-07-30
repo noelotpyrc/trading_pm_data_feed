@@ -2,9 +2,10 @@
 
 Snapshot of what runs on `vps-madrid` and where the code lives. Keep in sync when adding/removing a stream.
 
-Last verified: 2026-07-29 (post-incident: DNS fixed, all 5 streams relaunched incl. pm_signal_sim live-test v2, watchdog added — see changelog)
+Last verified: 2026-07-30 (VPS now tracks `origin/main`; `signal` stopped — see changelog)
 
 **Changelog**
+- **2026-07-30** — **Deploy model changed.** The VPS no longer vendors subtrees and commits locally; it now **reconciles onto `origin/main`** (`git fetch origin && git reset --hard origin/main`). The 6 old VPS-only deploy commits were dropped after verifying `pm_signal_sim`/`pm_shock_signal` were already byte-identical to `origin/main` — nothing lost. Pre-reset HEAD `4d11d7a` is tagged **`deploy-history-20260729`** on the VPS if it's ever needed. VPS is now 0/0 with `origin/main`. See [Deploys](#deploys). Also **stopped the `signal` session** (SIGINT 02:30:06 UTC) and dropped it from the watchdog's `EXPECTED_SESSIONS`; launch block kept below for restart.
 - **2026-07-29 (later)** — Redeployed `pm_signal_sim` (live-test v2, origin `d524d60`, VPS deploy `4d11d7a`): pre-registered S1 `fade` / S2 `z30_gate` evaluated at fire+3s + `ask_d5` fill log; book rows now carry top-of-book **sizes**, 500ms sampling in [fire, fire+5s], 120s pre-fire book dump; new tables `epoch_strike` / `signal_evals` / `fill_log`; Discord sweep now only posts windows with a passing S1/S2 fire (see `pm_signal_sim/LIVE_TEST_SPEC.md`). tmux session relaunched; `pm_signal_sim` re-added to the watchdog `EXPECTED_SESSIONS`.
 - **2026-07-29** — **41h outage** (2026-07-28 01:24 → 2026-07-29 18:36 UTC). Unattended-upgrades rebooted the box (kernel `6.8.0-101` → `6.8.0-136`); the reboot killed the tmux server *and* left Tailscale MagicDNS owning `/etc/resolv.conf` in direct-takeover mode with no working upstream, so every public hostname failed to resolve. All collection stopped; cron accumulators looped on `Temporary failure in name resolution`. Fix: `tailscale set --accept-dns=false` (durable) + restored `/etc/resolv.conf` from `/etc/resolv.pre-tailscale-backup.conf` (Vultr `108.61.10.10` + Quad9 `9.9.9.9`). Relaunched `signal`, `btc_depth`, `liq_collector`, `pm_collector`; `pm_signal_sim` left down (being reworked). Both 1m OHLCV DBs **self-backfilled** the full gap on the first post-fix cron run; the ~41h of streaming data (depth / liquidations / PM book) is **permanently lost**. Added an off-box watchdog — see [Monitoring](#monitoring).
 - **2026-06-19** — Stopped `pm_shock` (tmux killed; DB `data/pm_shock_signal.sqlite` + launch block kept for restart) and deployed `pm_signal_sim` (`pm_signal_sim.scripts.run_signal_sim`) in its place, live. Multi-def 15updown collector + honest raw capture (reports 22–24). Reuses the **`#pm-trading-signals`** webhook: new `DISCORD_WEBHOOK_URL_PM_SIGNAL_SIM` = the `…_PM_SHOCK` value (which `pm_shock` vacated). `.env` backed up to `.env.bak.sigsim.*`. Code vendored from origin `4ac974b` (subtree checkout).
@@ -53,7 +54,9 @@ Coinbase runs offset (`2-57/5`) so it doesn't collide with the Binance accumulat
 ### Long-running (tmux — one session per process)
 List: `ssh vps-madrid tmux ls`  ·  Attach: `ssh vps-madrid -t tmux attach -t <session>`
 
-**Expected sessions as of 2026-06-19:** `signal`, `btc_depth`, `liq_collector`, `pm_collector`, `pm_signal_sim` (5 active). Stopped: `pm_shock`, `pm_dual`, `signal-v3-contrarian`, `signal-v3-dir` (launch commands kept below for restart).
+**Expected sessions as of 2026-07-30:** `btc_depth`, `liq_collector`, `pm_collector`, `pm_signal_sim` (4 active). Stopped: `signal`, `pm_shock`, `pm_dual`, `signal-v3-contrarian`, `signal-v3-dir` (launch commands kept below for restart).
+
+This list must match `EXPECTED_SESSIONS` in `utils/vps_watchdog.sh` — update both together.
 
 Each block below is the full launch command; copy-paste it directly into the VPS shell to (re)create the session detached. All commands assume the project venv at `/root/trading_pm_data_feed/.venv`.
 
@@ -70,7 +73,7 @@ Webhook URLs live in VPS `.env` (loaded by `alert.send_discord`). Missing or emp
 
 **Webhook silencing decision (2026-05-07):** `DISCORD_WEBHOOK_URL_PM` and `DISCORD_WEBHOOK_URL_PM_DUAL` were emptied in `.env` to silence the per-poll `pm_collector` price chatter and the per-arb `pm_dual` triggers — too noisy for the value they were providing. The underlying sessions keep running and persisting JSONL to disk (`data/pm_btcupdown/*.jsonl`, `data/pm_dual/*.jsonl`) as before; only the `send_discord` calls no-op. To re-enable later, restore the URL line in `.env` (a timestamped backup is on the VPS) and restart the affected session(s). `DISCORD_WEBHOOK_URL` (signal engine + liquidation alerts) and `DISCORD_WEBHOOK_URL_SIGNAL_V3` (V3 streams) remain active.
 
-#### `signal` — signal engine + alerts (since Apr 13)
+#### `signal` — signal engine + alerts (since Apr 13) — ⏹ STOPPED 2026-07-30
 Webhook: `DISCORD_WEBHOOK_URL`
 ```bash
 tmux new -d -s signal "cd /root/trading_pm_data_feed && .venv/bin/python -m btcusdt_perp_signal.scripts.run_signal_engine --db data/btcusdt_perp_1m.sqlite"
@@ -197,6 +200,22 @@ Run a vendor-changelog sweep monthly as part of [monthly maintenance](monthly_ma
 When you confirm an endpoint is still serving correctly, bump the "Last verified" column.
 
 **Soft-failure fingerprint** (what bit us on 2026-04-23): WSS handshake succeeds, process stays alive, but no frames are ever pushed. Heuristic: if a streaming session's expected output file goes more than 24h without growing, treat it as a probable vendor change until proven otherwise. The legacy `/ws/` Binance URL is the exemplar — connect succeeds, recv silently times out forever.
+
+## Deploys
+
+**`origin/main` is the only source of truth. Never `git commit` on the VPS.**
+
+Deploy = push to `origin/main` from local, then on the VPS:
+
+```bash
+ssh vps-madrid "cd /root/trading_pm_data_feed && git fetch origin && git reset --hard origin/main"
+```
+
+`git status` on the box is then a real health signal: clean + `0/0` vs `origin/main` means prod matches the repo. Only `.env`, `.env.bak*`, `data/`, and `logs/` should ever show as untracked — all gitignored or deliberately local.
+
+Before 2026-07-30 the box vendored subtrees and made its own deploy commits, so it drifted 21 behind / 6 ahead of origin and `git status` told you nothing. That's gone; pre-reset HEAD is tagged `deploy-history-20260729` on the VPS.
+
+**A reset does not restart anything.** Running processes keep the code they loaded at start — restart a tmux session only if the deploy changed code it uses. Cron jobs pick up changes on their next tick automatically.
 
 ## Monitoring
 
