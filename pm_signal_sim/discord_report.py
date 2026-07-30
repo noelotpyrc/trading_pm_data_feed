@@ -126,7 +126,9 @@ def _fmt_window(res, fires, book_path, sig_evals=None, fills=None) -> str:
         f"🎯 **15updown {ts} UTC** · token **{token}** · {outcome}"
         + (f" · final `{final:.3f}`" if final is not None else ""),
     ]
-    for f in sorted(fires, key=lambda r: r["sec"]):
+    # asym_2_5_40_k150 is out of scope (no S1/S2 applied) — keep it firing/recording but off the report.
+    reportable = [f for f in fires if f["config_id"] in config.SIGNAL_SCOPE_CONFIGS]
+    for f in sorted(reportable, key=lambda r: r["sec"]):
         head = f"  `{f['config_id']}` sec={f['sec']} ratio={f['ratio']:.3f}"
         if f["p_entry"] is not None:
             head += f" p={f['p_entry']:.3f}"

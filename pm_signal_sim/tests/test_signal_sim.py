@@ -292,7 +292,7 @@ def test_fmt_window_tau_and_expiry_pnl():
 def test_fmt_window_pin_expiry_na():
     """Pin → expiry P&L is n/a; τ exits still compute from the book where a sample exists."""
     res = {"epoch_start": E, "token": "Up", "resolved": 0, "winner": 0, "final_price": 0.55}
-    fires = [{"config_id": "asym_2_5_40_k150", "sec": 100, "ratio": 1.6,
+    fires = [{"config_id": "trailmean_w60_k150", "sec": 100, "ratio": 1.6,
               "p_entry": 0.55, "entry_ask": 0.56, "local_ts": float(E + 100)}]
     book = [(float(E + 160), 0.58, 0.60)]            # τ60 sample only
     msg = _fmt_window(res, fires, book)
@@ -300,6 +300,20 @@ def test_fmt_window_pin_expiry_na():
     assert "τ60: net=+0.020 gross=+0.040" in msg     # 0.58−0.56 ; mid(0.59)−0.55
     assert "τ120: n/a" in msg                         # no +120 book sample, pin → no settle fallback
     assert "exp: n/a" in msg
+
+
+def test_fmt_window_drops_out_of_scope_config():
+    """asym_2_5_40_k150 fires/records but is off the report; in-scope configs still show."""
+    res = {"epoch_start": E, "token": "Up", "resolved": 1, "winner": 1, "final_price": 0.98}
+    fires = [
+        {"config_id": "asym_2_5_40_k150", "sec": 100, "ratio": 1.6,
+         "p_entry": 0.55, "entry_ask": 0.56, "local_ts": float(E + 100)},
+        {"config_id": "trailmean_w60_k150", "sec": 120, "ratio": 1.55,
+         "p_entry": 0.62, "entry_ask": 0.63, "local_ts": float(E + 120)},
+    ]
+    msg = _fmt_window(res, fires, [])
+    assert "asym_2_5_40_k150" not in msg
+    assert "trailmean_w60_k150" in msg
 
 
 def test_dry_run_sweep_non_destructive(tmp_path):
