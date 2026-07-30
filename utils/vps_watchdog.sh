@@ -27,7 +27,8 @@ CONFIRM_RUNS=2
 # Sessions that must be running.
 # pm_signal_sim re-added 2026-07-29 (live-test v2 redeploy).
 # signal removed 2026-07-30 (stopped deliberately).
-EXPECTED_SESSIONS=(btc_depth liq_collector pm_collector pm_signal_sim)
+# perp_v2 added 2026-07-30 (btcusdt_perp_signal_v2 dry run deployed).
+EXPECTED_SESSIONS=(btc_depth liq_collector pm_collector pm_signal_sim perp_v2)
 
 # Staleness limits (seconds)
 DB_MAX_AGE=900       # cron accumulators run every 5 min
