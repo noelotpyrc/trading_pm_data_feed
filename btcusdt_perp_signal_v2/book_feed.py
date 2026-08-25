@@ -133,12 +133,12 @@ class BookFeed:
         self._thread.start()
 
     def stop(self) -> None:
+        # The feed thread owns this socket and closes it in its own finally.
+        # Closing it from another thread can free an fd that has already been
+        # reopened elsewhere in the process (2026-08-12 DB corruption).
         self._stop.set()
-        if self._ws:
-            try:
-                self._ws.close()
-            except Exception:
-                pass
+        if self._thread:
+            self._thread.join(timeout=3)
 
     def _run(self) -> None:
         import logging

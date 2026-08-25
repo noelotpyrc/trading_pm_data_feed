@@ -69,11 +69,12 @@ class DepthFeed:
         self._thread.start()
 
     def stop(self):
-        if self._ws:
-            try:
-                self._ws.close()
-            except Exception:
-                pass
+        # The feed thread owns this socket and closes it in its own finally.
+        # Closing it from another thread can free an fd that has already been
+        # reopened elsewhere in the process (2026-08-12 DB corruption).
+        # _shutdown (module-global, set by the signal handler) stops the loop.
+        if self._thread:
+            self._thread.join(timeout=3)
 
     def get_recent(self, window_s: float = 30.0) -> list[dict]:
         """Return depth snapshots from the last window_s seconds."""
@@ -136,11 +137,12 @@ class TradeFeed:
         self._thread.start()
 
     def stop(self):
-        if self._ws:
-            try:
-                self._ws.close()
-            except Exception:
-                pass
+        # The feed thread owns this socket and closes it in its own finally.
+        # Closing it from another thread can free an fd that has already been
+        # reopened elsewhere in the process (2026-08-12 DB corruption).
+        # _shutdown (module-global, set by the signal handler) stops the loop.
+        if self._thread:
+            self._thread.join(timeout=3)
 
     def set_market(self, token_ids: list[str], yes_token_id: str | None):
         """Update the active market. Clears buffer and reconnects on change."""
@@ -150,11 +152,9 @@ class TradeFeed:
                 self._yes_token_id = yes_token_id
                 self.trades.clear()
                 self._restart.set()
-                if self._ws:
-                    try:
-                        self._ws.close()
-                    except Exception:
-                        pass
+                # _restart alone makes the WS loop resubscribe: its inner loop re-checks
+                # the flag every recv() timeout (2s). Do NOT close the socket here — the
+                # feed thread owns it (2026-08-12 DB corruption).
                 if token_ids:
                     print(f"[{fmt_now()}] Trade feed: subscribing to {len(token_ids)} tokens")
 

@@ -81,12 +81,12 @@ class BtcMidFeed:
         self._thread.start()
 
     def stop(self) -> None:
+        # The feed thread owns this socket and closes it in its own finally.
+        # Closing it from another thread can free an fd that has already been
+        # reopened elsewhere in the process (2026-08-12 DB corruption).
         self._stop.set()
-        if self._ws:
-            try:
-                self._ws.close()
-            except Exception:
-                pass
+        if self._thread:
+            self._thread.join(timeout=3)
 
     def _run(self) -> None:
         delay = 5
@@ -229,12 +229,12 @@ class PmTokenFeed:
         self._thread.start()
 
     def stop(self) -> None:
+        # The feed thread owns this socket and closes it in its own finally.
+        # Closing it from another thread can free an fd that has already been
+        # reopened elsewhere in the process (2026-08-12 DB corruption).
         self._stop.set()
-        if self._ws:
-            try:
-                self._ws.close()
-            except Exception:
-                pass
+        if self._thread:
+            self._thread.join(timeout=3)
 
     def roll_market(self, epoch_start: int) -> None:
         """Resolve + (re)subscribe to the market for `epoch_start`; reset per-token series."""
@@ -266,11 +266,9 @@ class PmTokenFeed:
             self._top = {}
             self._token_ids = [up_token_id, down_token_id]
             self._restart.set()
-        if self._ws:
-            try:
-                self._ws.close()   # force the WS loop to resubscribe with new tokens
-            except Exception:
-                pass
+        # _restart alone makes the WS loop resubscribe: its inner loop re-checks the
+        # flag every recv() timeout (2s). Do NOT close the socket here — the feed
+        # thread owns it (2026-08-12 DB corruption).
         log.info("PM feed: rolled to epoch %s (%s) strike=%s",
                  epoch_start, info.get("slug"), strike)
 

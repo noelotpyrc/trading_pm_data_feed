@@ -33,6 +33,7 @@ EXPECTED_SESSIONS=(btc_depth liq_collector pm_collector pm_signal_sim perp_v2)
 # Staleness limits (seconds)
 DB_MAX_AGE=900       # cron accumulators run every 5 min
 STREAM_MAX_AGE=300   # btc_depth / pm_collector write at 1s cadence
+SIM_MAX_AGE=2100     # pm_signal_sim logs one epoch_strike per 15m roll (allow one miss)
 
 mkdir -p "$CONF_DIR"
 log() { printf '[%s] %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" "$*" >>"$LOG_FILE"; }
@@ -59,7 +60,7 @@ for pair in "depth:btc_depth" "pmbook:pm_btcupdown"; do
 done
 
 /root/trading_pm_data_feed/.venv/bin/python - <<'PY'
-import sqlite3, datetime
+import sqlite3, datetime, time
 D = "/root/trading_pm_data_feed/data/"
 targets = [("perp", D + "btcusdt_perp_1m.sqlite", "ohlcv_btcusdt_1m"),
            ("coinbase", D + "btcusd_coinbase_1m.sqlite", "ohlcv_btcusd_coinbase_1m")]
@@ -72,6 +73,18 @@ for label, db, tbl in targets:
         print(f"{label}_age={int(age)}")
     except Exception:
         print(f"{label}_age=-1")
+
+# pm_signal_sim: epoch_strike gains a row every 15m the engine is up, so it is a
+# heartbeat. A destroyed page-1 header (2026-08-12) raises here -> simdb=corrupt.
+# The tmux session stayed alive through that outage, so session liveness is not enough.
+try:
+    c = sqlite3.connect(f"file:{D}pm_signal_sim.sqlite?mode=ro", uri=True)
+    m = c.execute("select max(epoch_start) from epoch_strike").fetchone()[0]
+    print("simdb=ok")
+    print(f"sim_age={-1 if m is None else int(time.time() - int(m))}")
+except Exception:
+    print("simdb=corrupt")
+    print("sim_age=-1")
 PY
 REMOTE
 )
@@ -105,6 +118,12 @@ else
   check_age coinbase "coinbase OHLCV DB"  "$DB_MAX_AGE"
   check_age depth    "btc_depth stream"   "$STREAM_MAX_AGE"
   check_age pmbook   "pm_btcupdown stream" "$STREAM_MAX_AGE"
+
+  case "$(get simdb)" in
+    ok)      check_age sim "pm_signal_sim DB" "$SIM_MAX_AGE" ;;
+    corrupt) problems+=("pm_signal_sim DB unreadable — corrupt or missing") ;;
+    *)       problems+=("pm_signal_sim DB: no reading") ;;
+  esac
 fi
 
 # --- alert on state change only ---------------------------------------------
