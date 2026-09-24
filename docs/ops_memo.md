@@ -2,9 +2,10 @@
 
 Snapshot of what runs on `vps-madrid` and where the code lives. Keep in sync when adding/removing a stream.
 
-Last verified: 2026-08-24 (`pm_signal_sim` relaunched on a fresh DB after the 08-12 corruption — see changelog; VPS tracks `origin/main`)
+Last verified: 2026-09-24 (`perp_v2` stopped — see changelog; VPS tracks `origin/main`)
 
 **Changelog**
+- **2026-09-24** — **Stopped `perp_v2`** (`btcusdt_perp_signal_v2` dry run) at 00:20:00 UTC after 55 days. SIGINT → clean exit in 5.0 s (`dry run stopped` logged); no open position at shutdown (`pipeline_state_v2.open_position` = NULL). Final tallies: 218 firings, 37 entries, 37 results, 56 daily summaries. Final DB snapshot + logs on the SSD at `btcusdt_perp_v2/2026-09-24_btcusdt_perp_v2_dryrun_final.sqlite`; the DB and logs stay in place on the VPS. The §6.4 daily summary to `#trading-signals` ends (`liq_collector` still posts there). Removed from watchdog `EXPECTED_SESSIONS`. Launch block kept below for restart. RSS at stop: 129 MB.
 - **2026-08-24** — **`pm_signal_sim` DB corruption (2026-08-12 13:00:04 UTC) found and handled.** The first 32 bytes of `data/pm_signal_sim.sqlite` (the SQLite header) were overwritten with a TLS application-data record (`17 03 03 …`); every write failed from then on with `file is not a database` while the process stayed up (12 days of error spam; log grew to 724 MB). **Root cause (found 2026-08-24, fixed in `7df7fc7`):** a cross-thread socket close. `PmTokenFeed.roll_market()` closed the feed thread's websocket from the main thread on every 15m roll, outside the lock, while the feed thread's own `finally` closed it too and immediately reconnected. `signal_db` opens/closes a SQLite connection per insert, so the process churns fds constantly; the stale close freed an fd that SQLite had just been handed, and OpenSSL (which writes with `write(2)` on Unix) put a TLS record at offset 0. No reboot, no disk-full, no I/O error in the journal. Rate: one corruption per ~5,150 rolls (53.7 days of uptime). Data pages were intact: the header was rebuilt on a copy and `integrity_check` is ok → `/Volumes/Extreme SSD/vps_madrid_backup/pm_signal_sim/pm_signal_sim_recovered_2026-08-12.sqlite`. Live: process stopped (SIGINT), DB moved to `data/pm_signal_sim_corrupt_2026-08-12.sqlite`, log to `data/pm_signal_sim_thru2026-08-24.log`, relaunched 19:43:16 UTC on a fresh DB (ids restart at 1). The unrecorded 08-12 13:00 → 08-24 19:43 window is rebuilt offline by `pm_signal_sim/scripts/replay_feeds.py` from the collectors (`pm_btcupdown`, `btc_depth`) + data-api trades (`pm_btc15updown_data.fetch_pm_trades`); feed jsonl for 08-06..08-24 copied to `/Volumes/Extreme SSD/vps_madrid_backup/feeds_2026-08-24/` and tarred to `/root/feed_backup_2026-08-24/` on the VPS. **Fixed in `7df7fc7`:** the redundant cross-thread close is gone from `roll_market()` and from `TradeFeed.set_market()` (same defect, also every 15m); `_restart` alone drives resubscription, so the socket is single-owner and the race is removed rather than narrowed. The five `stop()` methods now set the stop event and `join()`. The watchdog also gained `simdb`/`sim_age` checks on `pm_signal_sim.sqlite` — the tmux session stayed alive for all 12 days, so session liveness could never have caught this. **Needs deploy:** `pm_collector` and `pm_signal_sim` must be restarted to pick up the fix.
 - **2026-07-30 (later)** — **Deployed `btcusdt_perp_signal_v2`** (`btcusdt_perp_signal_v2.scripts.run_dryrun`) as tmux `perp_v2`, replacing the stopped v1 `signal`. 11-cell decile-book **dry run** (no orders): warms up ~180d of 1m bars → incremental rank→decile engine → FCFS single-slot (BUFFER=2, N=180); records FIRING/ENTRY/RESULT + order-book executable ladder to `data/btcusdt_perp_v2_dryrun.sqlite`; posts a §6.4 **daily summary** to `DISCORD_WEBHOOK_URL` (`#trading-signals`). Kline WS uses the **`/market/ws/`** path — the legacy `/ws/` serves 0 kline frames (caught pre-launch; see [Binance](#binance-usdⓈ-m-futures)). RSS ~290 MB. Added `perp_v2` to the watchdog `EXPECTED_SESSIONS`. Spec: `btcusdt_perp_signal_v2/SPEC_dryrun_book11.md` + `IMPLEMENTATION.md`.
 - **2026-07-30** — **Deploy model changed.** The VPS no longer vendors subtrees and commits locally; it now **reconciles onto `origin/main`** (`git fetch origin && git reset --hard origin/main`). The 6 old VPS-only deploy commits were dropped after verifying `pm_signal_sim`/`pm_shock_signal` were already byte-identical to `origin/main` — nothing lost. Pre-reset HEAD `4d11d7a` is tagged **`deploy-history-20260729`** on the VPS if it's ever needed. VPS is now 0/0 with `origin/main`. See [Deploys](#deploys). Also **stopped the `signal` session** (SIGINT 02:30:06 UTC) and dropped it from the watchdog's `EXPECTED_SESSIONS`; launch block kept below for restart.
@@ -40,7 +41,7 @@ Last verified: 2026-08-24 (`pm_signal_sim` relaunched on a fresh DB after the 08
 | `pm_shock_signal.scripts.run_shock_signal` | PM shock-continuation sim (d5/d10 back-ratio) | `data/pm_shock_signal.sqlite` ⏹ **stopped 2026-06-19** (replaced by `pm_signal_sim`; launch block kept) |
 | `pm_shock_signal.scripts.resolve_outcomes` | Backfill `resolved_outcome` on shock sim trades via Gamma `outcomePrices` | `data/pm_shock_signal.sqlite` — manual pass (for the retained shock DB) |
 | `pm_signal_sim.scripts.run_signal_sim` | Live multi-def 15updown collector + sim — 4 k=1.5 configs (trailmean w60, consistent {2,5,10,20}, asym (2,5,40)&(5,5,10)) on p≥0.5; per fire persists a bounded multi-source **raw slice** (PM trades/book, BTC depth20/tick) + window resolution; batched merged-per-window Discord post-resolution | `data/pm_signal_sim.sqlite`, `data/pm_signal_sim.log` — **active (deployed 2026-06-19)** |
-| `btcusdt_perp_signal_v2.scripts.run_dryrun` | 11-cell decile-book BTCUSDT-perp **dry run** (no orders): 180d incremental rank→decile → FCFS single-slot (BUFFER=2, N=180); FIRING/ENTRY/RESULT + order-book executable ladder; §6.4 daily summary to Discord | `data/btcusdt_perp_v2_dryrun.sqlite`, `data/btcusdt_perp_v2.log` — **active (deployed 2026-07-30)**; replaces stopped v1 `signal` |
+| `btcusdt_perp_signal_v2.scripts.run_dryrun` | 11-cell decile-book BTCUSDT-perp **dry run** (no orders): 180d incremental rank→decile → FCFS single-slot (BUFFER=2, N=180); FIRING/ENTRY/RESULT + order-book executable ladder; §6.4 daily summary to Discord | `data/btcusdt_perp_v2_dryrun.sqlite`, `data/btcusdt_perp_v2.log` ⏹ **stopped 2026-09-24** (ran from 2026-07-30; launch block kept) |
 
 ## Running on VPS
 
@@ -57,7 +58,7 @@ Coinbase runs offset (`2-57/5`) so it doesn't collide with the Binance accumulat
 ### Long-running (tmux — one session per process)
 List: `ssh vps-madrid tmux ls`  ·  Attach: `ssh vps-madrid -t tmux attach -t <session>`
 
-**Expected sessions as of 2026-07-30:** `btc_depth`, `liq_collector`, `pm_collector`, `pm_signal_sim`, `perp_v2` (5 active). Stopped: `signal`, `pm_shock`, `pm_dual`, `signal-v3-contrarian`, `signal-v3-dir` (launch commands kept below for restart).
+**Expected sessions as of 2026-09-24:** `btc_depth`, `liq_collector`, `pm_collector`, `pm_signal_sim` (4 active). Stopped: `perp_v2`, `signal`, `pm_shock`, `pm_dual`, `signal-v3-contrarian`, `signal-v3-dir` (launch commands kept below for restart).
 
 This list must match `EXPECTED_SESSIONS` in `utils/vps_watchdog.sh` — update both together.
 
@@ -67,7 +68,7 @@ Webhook URLs live in VPS `.env` (loaded by `alert.send_discord`). Missing or emp
 
 | Env var | Channel | Channel ID | Used by | Discord status |
 |---|---|---|---|---|
-| `DISCORD_WEBHOOK_URL` | `#trading-signals` | `1492314707372150814` | `signal` (stopped), `liq_collector`, `perp_v2` (daily summary) | ✅ active |
+| `DISCORD_WEBHOOK_URL` | `#trading-signals` | `1492314707372150814` | `signal` (stopped), `liq_collector`, `perp_v2` (stopped) | ✅ active |
 | `DISCORD_WEBHOOK_URL_PM` | `#pm-price-alert` | `1492688541405413396` | `pm_collector` | 🔇 silenced 2026-05-07 |
 | `DISCORD_WEBHOOK_URL_PM_DUAL` | `#pm-dual-price` | `1493441980968075488` | `pm_dual` | ⏹ session stopped 2026-05-29 (was 🔇 silenced 2026-05-07) |
 | `DISCORD_WEBHOOK_URL_SIGNAL_V3` | `#pm-trading-signals` | `1494415390875320330` | `signal-v3-contrarian`, `signal-v3-dir` | ⏹ both sessions stopped 2026-05-29 |
@@ -108,7 +109,7 @@ tmux new -d -s pm_signal_sim "cd /root/trading_pm_data_feed && .venv/bin/python 
 ```
 Flags: `--dry-run` (log alerts, don't post; non-destructive — windows stay unalerted), `--relax` (dev-only k≈1.01/no p-floor to force fires for the §8 capture test — **not** real data), `--db PATH`. Configs live in `pm_signal_sim/config.py`. Raw slices only persist for windows that fire (k=1.5 on p≥0.5 → rare; watch disk once it has run a while).
 
-#### `perp_v2` — btcusdt_perp_signal_v2 11-cell dry run (since Jul 30) — ✅ ACTIVE
+#### `perp_v2` — btcusdt_perp_signal_v2 11-cell dry run (since Jul 30) — ⏹ STOPPED 2026-09-24
 Webhook: `DISCORD_WEBHOOK_URL` (→ `#trading-signals`; §6.4 daily summary only, once per UTC day). **Paper dry run — no orders.** Warms up ~180d of 1m OHLCV (reads `data/btcusdt_perp_1m.sqlite` read-only, REST-fills the tail), seeds the incremental rank→decile engine, then per closed bar runs the FCFS book; writes FIRING/ENTRY/RESULT + order-book executable ladder to `data/btcusdt_perp_v2_dryrun.sqlite`. Kline WS on the `/market/ws/` path (legacy `/ws/` serves 0 kline frames). RSS ~290 MB. Logs → `data/btcusdt_perp_v2.log` (stray stdout → `data/btcusdt_perp_v2.out`).
 ```bash
 tmux new -d -s perp_v2 "cd /root/trading_pm_data_feed && .venv/bin/python -m btcusdt_perp_signal_v2.scripts.run_dryrun >> data/btcusdt_perp_v2.out 2>&1"
@@ -152,13 +153,13 @@ On **2026-04-23** the legacy unrouted `wss://fstream.binance.com/ws/<stream>` UR
 
 | Endpoint | Class | Used by | Last verified |
 |---|---|---|---|
-| `wss://fstream.binance.com/market/ws/btcusdt@kline_1m` | /market | `signal` (stopped), `perp_v2`, `signal-v3-contrarian`, `signal-v3-dir` | 2026-07-30 |
+| `wss://fstream.binance.com/market/ws/btcusdt@kline_1m` | /market | `signal` (stopped), `perp_v2` (stopped), `signal-v3-contrarian`, `signal-v3-dir` | 2026-07-30 |
 | `wss://fstream.binance.com/market/ws/btcusdt@forceOrder` | /market | `liq_collector` | 2026-05-02 |
 | `wss://fstream.binance.com/ws/btcusdt@depth20@500ms` | /public (legacy URL still serves) | `btc_depth`, `pm_collector` DepthFeed, `pm_signal_sim` (`BtcDepth20Feed`) | 2026-06-19 — migrate to `/public/ws/...` as cleanup |
 | `wss://fstream.binance.com/ws/btcusdt@bookTicker` | /public (legacy URL still serves) | `pm_signal_sim` (`BtcMidFeed` → mid); `pm_shock` (stopped) | 2026-06-19 — same legacy `/ws/` family as depth20; verified pushing; migrate to `/public/ws/...` as cleanup |
-| `wss://fstream.binance.com/stream?streams=btcusdt@depth20@100ms/btcusdt@bookTicker` | /public (combined) | `perp_v2` (`BookFeed` → executable ladder + hold stats) | 2026-07-30 |
-| `https://fapi.binance.com/fapi/v1/klines` | REST | `accumulate_1m` cron, `repair_gaps_1m` cron, `pm_collector` (`fetch_strike`), `pm_signal_sim` (`fetch_strike`), `perp_v2` (warm-up + gap backfill), `pm_dual`, `signal-v3-*` | 2026-07-30 |
-| `https://fapi.binance.com/fapi/v1/time` | REST | `perp_v2` (clock-drift check, start + hourly) | 2026-07-30 |
+| `wss://fstream.binance.com/stream?streams=btcusdt@depth20@100ms/btcusdt@bookTicker` | /public (combined) | `perp_v2` (stopped; `BookFeed` → executable ladder + hold stats) | 2026-07-30 |
+| `https://fapi.binance.com/fapi/v1/klines` | REST | `accumulate_1m` cron, `repair_gaps_1m` cron, `pm_collector` (`fetch_strike`), `pm_signal_sim` (`fetch_strike`), `perp_v2` (stopped; warm-up + gap backfill), `pm_dual`, `signal-v3-*` | 2026-07-30 |
+| `https://fapi.binance.com/fapi/v1/time` | REST | `perp_v2` (stopped; clock-drift check, start + hourly) | 2026-07-30 |
 
 Watch list: [Binance Derivatives Change Log](https://developers.binance.com/docs/derivatives/change-log)
 
@@ -187,7 +188,7 @@ Watch list: [Coinbase Exchange API changelog](https://docs.cdp.coinbase.com/exch
 | Session / cron | Sources |
 |---|---|
 | `signal` tmux ⏹ stopped 2026-07-30 | Binance `kline_1m` WSS · SQLite warmup |
-| `perp_v2` tmux | Binance `kline_1m` WSS (`/market/ws/`) · `depth20@100ms`+`bookTicker` combined WSS · FAPI `/klines` (warm-up/backfill) + `/time` (drift) · SQLite warmup (read-only) |
+| `perp_v2` tmux ⏹ stopped 2026-09-24 | Binance `kline_1m` WSS (`/market/ws/`) · `depth20@100ms`+`bookTicker` combined WSS · FAPI `/klines` (warm-up/backfill) + `/time` (drift) · SQLite warmup (read-only) |
 | `btc_depth` tmux | Binance `depth20@500ms` WSS |
 | `liq_collector` tmux | Binance `forceOrder` WSS |
 | `pm_collector` tmux | Polymarket Gamma + CLOB + WSS market · Binance `depth20@500ms` WSS · Binance FAPI `/klines` |
