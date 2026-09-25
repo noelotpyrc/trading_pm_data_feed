@@ -7,3 +7,13 @@ data/
 .venv
 .env
 .DS_Store
+
+# Strategy specs, analysis, and signal configs stay private (kept locally, not published)
+*/config.py
+*SPEC*.md
+*_spec*.md
+strategy_guide.md
+ANALYSIS.md
+REVIEW.md
+IMPLEMENTATION.md
+docs/discord_signal_analysis.md
