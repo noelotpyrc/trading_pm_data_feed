@@ -2,9 +2,9 @@
 
 Status: SofaScore routing implemented with 139 passing regression tests; live
 preflight and deployment are tracked separately. The isolated FotMob shadow
-collector is now built and tested; see [FOTMOB_SHADOW.md](FOTMOB_SHADOW.md).
-Continuous deployment and active-provider selection remain future steps.
-An opt-in candidate-based book-capture gate is now implemented separately from
+collector is deployed continuously; see [FOTMOB_SHADOW.md](FOTMOB_SHADOW.md).
+Active-provider selection remains future work.
+An opt-in candidate-based book-capture gate is now deployed separately from
 active-provider selection; see FOTMOB_SHADOW.md. It preserves original fire and
 filter results and conservatively captures extra depth during SofaScore outages.
 Keep the live recorder causal and order-free, with JSONL storage,

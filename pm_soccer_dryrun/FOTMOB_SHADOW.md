@@ -1,7 +1,21 @@
 # FotMob shadow collector
 
-Built and tested locally; not installed as a continuous production service.
-SofaScore remains the sole source used by the live signal recorder.
+Deployed continuously on Genie and VPS on 2026-09-30, with recording-only
+fallback capture enabled. SofaScore remains the sole source for original fire
+and filter results. FotMob can open additional candidate-based book windows.
+
+Current primary run:
+`/root/trading_pm_data_feed/data/pm_soccer_dryrun/vps-genie-20260930-fotmob`.
+Shadow recordings:
+`/root/trading_pm_data_feed/data/pm_soccer_fotmob_shadow/vps-genie-20260930`.
+The existing resource timer now records memory/CPU/disk samples for both VPS
+services into their respective data directories. Previous recordings remain
+intact. Deployment backup and rollback script:
+`/root/pm-soccer-fotmob-deploy-20260930/`.
+
+Runtime code is commit `de46990` (including the SSH host-alias correction).
+Genie uses system LaunchDaemons and does not require a desktop login. The
+FotMob tunnel reuses the verified `pm-soccer-vps` host-key pin with strict checking.
 
 ## Isolation and connection
 
@@ -15,9 +29,9 @@ VPS primary recorder ── JSONL catalog/scores (read-only) ──► shadow re
                                    separate FotMob JSONL + compressed payloads
 ```
 
-The deployed primary recorder's process, port 18765, data directory and signal
-rules are unchanged. An optional recording-only integration is now implemented
-locally (below); it is disabled unless explicitly configured. The shadow receiver never calls the engine or publishes
+The primary uses its existing SofaScore port 18765 and signal rules. Deployment
+restarted it into the new run directory and enabled the optional recording-only
+integration below. The option defaults off for other runs. The shadow receiver never calls the engine or publishes
 scores into its Store. It owns its own Store with no engine callback and no
 fire/book-window outputs. There is no recovery journal.
 
@@ -81,7 +95,9 @@ caching, so this is not a promise of ten-second goal-reporting latency.
 
 ## Plugging it in without restarting production
 
-These are deployment instructions, not actions already performed.
+The separate services can be installed without restarting the primary. These
+steps were completed on 2026-09-30; activating the recording gate additionally
+requires the controlled primary restart described below.
 
 1. Copy the package to **separate application directories**:
    `/root/pm_soccer_fotmob_shadow/` on VPS and
@@ -91,7 +107,7 @@ These are deployment instructions, not actions already performed.
 2. Create the separate VPS output parent
    `/root/trading_pm_data_feed/data/pm_soccer_fotmob_shadow/` and Genie `logs/`.
    The included `fotmob-shadow.service` points at the current primary run
-   `vps-genie-20260930`. If production later moves run directories, update this
+   `vps-genie-20260930-fotmob`. If production later moves run directories, update this
    sidecar argument; it does not silently search for a different primary run.
 3. Extend the existing dedicated SSH relay user's forwarding permissions to
    allow **127.0.0.1:18766 as well as 18765**, in both sshd and the authorized-key
@@ -104,7 +120,7 @@ These are deployment instructions, not actions already performed.
 
    ```sh
    /root/trading_pm_data_feed/.venv-soccer/bin/python -m pm_soccer_dryrun.fotmob_shadow receiver \
-     --primary-dir /root/trading_pm_data_feed/data/pm_soccer_dryrun/vps-genie-20260930 \
+     --primary-dir /root/trading_pm_data_feed/data/pm_soccer_dryrun/vps-genie-20260930-fotmob \
      --data-dir /root/trading_pm_data_feed/data/pm_soccer_fotmob_shadow/vps-genie-20260930 \
      --duration 120
    ```
@@ -143,7 +159,7 @@ or score-update latency. Artifacts are in `data/fotmob-build-20260930/`.
 
 ## Optional recording-only fallback gate
 
-Implemented and tested locally, not deployed. Enable on the primary recorder:
+Enabled in the current VPS run. To enable on another primary run:
 
 ```sh
 python -m pm_soccer_dryrun.service live \
@@ -200,6 +216,15 @@ increase outage-time storage; the policy/window settings are in the run manifest
 observations, session/identity checks, score corrections, clocks, partial rows,
 opening/expiry and a primary service + background reader integration with no
 score injection or fabricated fires.
+
+Deployment validation: 190 regression tests passed. Genie delivered list and
+detail observations for all three currently tracked matches. Both VPS services
+were active with no automatic restarts after activation; primary SofaScore polls
+returned HTTP 200. An isolated temporary recording test used a fresh live
+Botswana–Mozambique observation with a synthetic candidate: it opened a five-minute
+window and rejected capture when SofaScore was marked healthy. Synthetic data
+never entered production recordings. Evidence is under the repository's ignored
+`data/fotmob-deploy-20260930/` directory.
 
 Next validation after deployment: several simultaneous matches, goal/VAR update
 delay comparisons, source outages/reconnects, alias gaps, and actual CPU/memory/
