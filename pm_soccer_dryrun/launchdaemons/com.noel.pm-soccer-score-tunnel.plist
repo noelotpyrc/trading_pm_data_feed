@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.noel.pm-soccer-score-tunnel</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/ssh</string>
+		<string>-N</string>
+		<string>-T</string>
+		<string>-F</string>
+		<string>/Users/noel/services/pm-soccer-score-worker/ssh_config</string>
+		<string>pm-soccer-relay</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>5</integer>
+	<key>StandardOutPath</key>
+	<string>/Users/noel/services/pm-soccer-score-worker/logs/tunnel.stdout.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/noel/services/pm-soccer-score-worker/logs/tunnel.stderr.log</string>
+	<key>UserName</key>
+	<string>noel</string>
+	<key>GroupName</key>
+	<string>staff</string>
+	<key>ExitTimeOut</key>
+	<integer>45</integer>
+</dict>
+</plist>

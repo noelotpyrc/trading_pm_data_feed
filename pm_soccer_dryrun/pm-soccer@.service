@@ -1,0 +1,23 @@
+[Unit]
+Description=Polymarket soccer live recorder (%i)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/trading_pm_data_feed
+Environment=PYTHONUNBUFFERED=1
+Environment=SOCCER_RUN_ID=soccer-vps-genie-20260930
+# Use only pm-soccer@live; each restart starts a fresh session.
+ExecStart=/root/trading_pm_data_feed/.venv-soccer/bin/python -m pm_soccer_dryrun live --data-dir /root/trading_pm_data_feed/data/pm_soccer_dryrun/vps-genie-20260930 --run-id ${SOCCER_RUN_ID} --book-window-minutes 5 --score-relay-bind 127.0.0.1 --score-relay-peer 127.0.0.1 --score-relay-port 18765
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+KillMode=control-group
+MemoryAccounting=true
+CPUAccounting=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

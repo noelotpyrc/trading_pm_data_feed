@@ -1,0 +1,11 @@
+[Unit]
+Description=Record soccer CPU, memory and disk usage every minute
+
+[Timer]
+OnActiveSec=20
+OnUnitActiveSec=60
+AccuracySec=5
+Unit=pm-soccer-resources.service
+
+[Install]
+WantedBy=timers.target

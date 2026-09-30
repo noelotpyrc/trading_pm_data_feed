@@ -1,0 +1,11 @@
+[Unit]
+Description=Sample soccer recorder resources (no cutoff or cleanup)
+After=pm-soccer@live.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/trading_pm_data_feed
+ExecStart=/root/trading_pm_data_feed/.venv-soccer/bin/python -m pm_soccer_dryrun.resource_sample --unit pm-soccer@live.service --data-dir /root/trading_pm_data_feed/data/pm_soccer_dryrun/vps-genie-20260930
+TimeoutStartSec=40
+StandardOutput=journal
+StandardError=journal
