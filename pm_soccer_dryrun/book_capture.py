@@ -55,7 +55,16 @@ class BookCapture:
     def fire(self, row):
         if row.get("kind") != "fire" or row.get("f_minute30") is not True or row.get("f_leader1_up") is not True:
             return
-        slug, ms = row["slug"], row["fire_recv_ms"]
+        self._open(row, row["fire_recv_ms"], {"fire_recv_ms": row["fire_recv_ms"]})
+
+    def fallback_candidate(self, row, evidence):
+        if row.get("kind") != "candidate" or not evidence:
+            return
+        self.counts["fotmob_candidate_windows"] += 1
+        self._open(row, row["emitted_ms"], evidence)
+
+    def _open(self, row, ms, evidence):
+        slug = row["slug"]
         previous = self.ends.get(slug, 0)
         end = max(previous, ms + self.duration_ms)
         self.ends[slug] = end
@@ -63,7 +72,7 @@ class BookCapture:
         self.counts["window_extensions" if active else "windows_opened"] += 1
         tokens = {token: info for token, info in self.routing.items() if info[0] == slug}
         self._marker(slug, ms, {"event": "extend" if active else "open", "candidate_id": row["candidate_id"],
-                               "fire_recv_ms": ms, "end_ms": end, "duration_ms": self.duration_ms,
+                               **evidence, "end_ms": end, "duration_ms": self.duration_ms,
                                "tokens": sorted(tokens), "missing_tokens": sorted(set(tokens) - self.books.keys())})
         if active:
             return

@@ -1,7 +1,12 @@
 # Score-source resilience plan — 2026-09-30
 
 Status: SofaScore routing implemented with 139 passing regression tests; live
-preflight and deployment are tracked separately. FotMob remains proposed.
+preflight and deployment are tracked separately. The isolated FotMob shadow
+collector is now built and tested; see [FOTMOB_SHADOW.md](FOTMOB_SHADOW.md).
+Continuous deployment and active-provider selection remain future steps.
+An opt-in candidate-based book-capture gate is now implemented separately from
+active-provider selection; see FOTMOB_SHADOW.md. It preserves original fire and
+filter results and conservatively captures extra depth during SofaScore outages.
 Keep the live recorder causal and order-free, with JSONL storage,
 no recovery journal, and the existing qualifying-fire book windows.
 
@@ -111,12 +116,12 @@ supported data-feed agreement.
 
 ## 4. Relay, causality and source comparison
 
-- Keep both providers on Genie initially, using the existing authenticated SSH
-  transport to the VPS. Provider pollers, queues, cooldowns and health are
-  independent so one provider's failure cannot starve the other or heartbeats.
-- Extend the protocol with an explicit provider discriminator and version
-  handshake. Keep RPC paths narrowly allowed and IDs limited to the verified
-  teams and current match scope; do not permit arbitrary URLs.
+- Keep both providers on Genie in separate processes. The implemented sidecar
+  uses a separate authenticated SSH connection and loopback port 18766, leaving
+  SofaScore port 18765 untouched. Cooldowns, health and receiver state are separate.
+- A distinct FotMob handshake checks protocol version and alias digest. The VPS
+  supplies read-only catalog scope; there is no general-purpose HTTP RPC. Only
+  approved match-list/detail routes are used, and the receiver verifies mappings.
 - Namespace score state by `(provider, event_id)`. Maintain existing SofaScore
   behavior while writing FotMob observations to separate provider directories.
 - Preserve source request/receipt/send, VPS receipt and locked application times.
@@ -182,7 +187,8 @@ Completed 09:59:33–10:02:33 EDT on 2026-09-30:
 - Original-host baseline: HTTP 403 `Forbidden`. Website requests remained
   successful while that hostname was in its diagnostic cooldown.
 - No website failure occurred, so a website-to-original successful failover was
-  not observed. Deterministic routing tests and integration tests remain work
-  for the implementation, as do sustained match-batch validation and rollout.
+  not observed. Deterministic routing tests and relay integration subsequently
+  passed, and the SofaScore change was deployed in commit `0b367f6`. Sustained
+  second-provider comparison remains future work.
 - Reproduction script and machine-readable summary are alongside the JSONL as
   `probe.py` and `summary.json`.

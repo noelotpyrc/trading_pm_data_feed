@@ -1,0 +1,11 @@
+Host pm-fotmob-shadow
+    HostName 208.76.221.75
+    User soccer-relay
+    IdentityFile /Users/noel/.ssh/pm_soccer_relay_ed25519
+    IdentitiesOnly yes
+    UserKnownHostsFile /Users/noel/services/pm-soccer-score-worker/known_hosts
+    StrictHostKeyChecking yes
+    ExitOnForwardFailure yes
+    ServerAliveInterval 10
+    ServerAliveCountMax 3
+    LocalForward 127.0.0.1:18766 127.0.0.1:18766

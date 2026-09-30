@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.noel.pm-fotmob-shadow-worker</string>
+  <key>UserName</key><string>noel</string><key>GroupName</key><string>staff</string>
+  <key>WorkingDirectory</key><string>/Users/noel/services/pm-soccer-fotmob-worker</string>
+  <key>ProgramArguments</key><array>
+    <string>/Users/noel/services/pm-soccer-score-worker/.venv/bin/python</string>
+    <string>-u</string><string>-m</string><string>pm_soccer_dryrun.fotmob_shadow</string><string>worker</string>
+  </array>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer><key>ExitTimeOut</key><integer>20</integer>
+  <key>StandardOutPath</key><string>/Users/noel/services/pm-soccer-fotmob-worker/logs/worker.stdout.log</string>
+  <key>StandardErrorPath</key><string>/Users/noel/services/pm-soccer-fotmob-worker/logs/worker.stderr.log</string>
+</dict></plist>

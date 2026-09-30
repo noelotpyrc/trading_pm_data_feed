@@ -470,15 +470,22 @@ def daily_summary(store):
     store.put("summary_day", today)
 
 
-def run_live(store, stop, run_id, alias_path=None, book_window_minutes=5, relay_config=None):
+def run_live(store, stop, run_id, alias_path=None, book_window_minutes=5, relay_config=None,
+             fotmob_shadow_dir=None):
     """Network workers share one recorder and one fresh, in-memory engine."""
     engine = Engine(run_id, session_id=store.session_id)
     capture = BookCapture(store, book_window_minutes)
+    fotmob = None
+    if fotmob_shadow_dir is not None:
+        from .fotmob_capture import FotmobCapture
+        fotmob = FotmobCapture(fotmob_shadow_dir, store, engine)
     # append() holds the shared lock: input and output sequences are ordered,
     # and the timer cannot close a second midway through a websocket frame.
     def deliver(event):
         for row in engine_batch(store, engine, [event], now_ms()):
             capture.fire(row)
+            if fotmob is not None:
+                capture.fallback_candidate(row, fotmob.decision(row))
     store.on_event = deliver
     errors = []
 
@@ -497,6 +504,9 @@ def run_live(store, stop, run_id, alias_path=None, book_window_minutes=5, relay_
         score_target, score_args = relay_scores, (store, stop, alias_path, relay_config)
     workers = [threading.Thread(target=worker, args=(collect, store, stop, capture), name="soccer-collector"),
                threading.Thread(target=worker, args=(score_target, *score_args), name="soccer-scores")]
+    if fotmob is not None:
+        workers.append(threading.Thread(target=worker, args=(fotmob.run, stop),
+                                        name="fotmob-capture-input"))
     log_event(store, "engine", "session_start", session_id=store.session_id, recovery=False,
               book_window_minutes=book_window_minutes)
     last_second = None
@@ -541,10 +551,16 @@ def main(argv=None):
                         help="Verified team whitelist CSV: pm_name,query,sofascore_team_id (no name-search fallback)")
     parser.add_argument("--book-window-minutes", type=float, default=5,
                         help="Depth recording duration after each filter-passing fire (default: 5)")
+    parser.add_argument("--fotmob-shadow-dir", type=Path,
+                        help="Opt-in: read FotMob shadow observations for outage-only candidate book windows")
     parser.add_argument("--score-relay-bind", help="Listen on a Tailscale IPv4 address or 127.0.0.1 for an SSH tunnel")
     parser.add_argument("--score-relay-port", type=int, default=18765)
     parser.add_argument("--score-relay-peer", help="Only accept this worker Tailscale IPv4 address, or 127.0.0.1 for SSH")
     args = parser.parse_args(argv)
+    if args.fotmob_shadow_dir:
+        primary, shadow = args.data_dir.resolve(), args.fotmob_shadow_dir.resolve()
+        if primary == shadow or primary in shadow.parents or shadow in primary.parents:
+            parser.error("FotMob shadow and primary recording directories must be separate")
     relay_config = None
     if args.score_relay_bind:
         from .relay import validate_addresses
@@ -571,11 +587,19 @@ def main(argv=None):
         digest = hashlib.sha256()
         for name in ("engine.py", "sources.py", "service.py", "storage.py", "lifecycle.py", "book_capture.py", "relay.py"):
             digest.update(Path(__file__).with_name(name).read_bytes())
+        if args.fotmob_shadow_dir:
+            for name in ("fotmob_capture.py", "fotmob.py", "fotmob_team_aliases.csv"):
+                digest.update(Path(__file__).with_name(name).read_bytes())
         manifest = {"run_id": args.run_id, "rule_version": RULE_VERSION, "code_sha256": digest.hexdigest(),
                     "storage_version": "post-fire-books-2", "book_window_ms": duration_ms,
                     "team_whitelist_sha256": team_digest}
         if relay_config:
             manifest["score_relay"] = relay_config
+        if args.fotmob_shadow_dir:
+            from .fotmob_capture import POLICY, MAX_AGE_MS
+            manifest["storage_version"] = "post-fire-and-fallback-candidate-books-3"
+            manifest["fotmob_capture"] = {"policy": POLICY, "max_age_ms": MAX_AGE_MS,
+                                         "shadow_dir": str(args.fotmob_shadow_dir.resolve())}
         manifest_path = args.data_dir / "run.json"
         if manifest_path.exists() and json.loads(manifest_path.read_text()) != manifest:
             raise ValueError("Run ID or implementation changed; use a new data directory")
@@ -596,6 +620,8 @@ def main(argv=None):
                 writer.writerow(["pm_name", "query", "sofascore_team_id"])
                 writer.writerows((name, team["name"], team["id"]) for name, team in sorted(teams.items()))
             relay_args = {"relay_config": relay_config} if relay_config else {}
+            if args.fotmob_shadow_dir:
+                relay_args["fotmob_shadow_dir"] = args.fotmob_shadow_dir
             run_live(store, stop, args.run_id, whitelist_path, args.book_window_minutes, **relay_args)
         finally:
             store.close()

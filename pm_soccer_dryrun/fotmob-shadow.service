@@ -1,0 +1,26 @@
+[Unit]
+Description=FotMob shadow recorder (separate from soccer signal recorder)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/pm_soccer_fotmob_shadow
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/root/trading_pm_data_feed/.venv-soccer/bin/python -m pm_soccer_dryrun.fotmob_shadow receiver --primary-dir /root/trading_pm_data_feed/data/pm_soccer_dryrun/vps-genie-20260930 --data-dir /root/trading_pm_data_feed/data/pm_soccer_fotmob_shadow/vps-genie-20260930
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=20
+Nice=10
+CPUQuota=10%
+MemoryMax=128M
+TasksMax=16
+NoNewPrivileges=true
+CapabilityBoundingSet=
+ProtectSystem=strict
+ReadOnlyPaths=/root/trading_pm_data_feed/data/pm_soccer_dryrun
+ReadWritePaths=/root/trading_pm_data_feed/data/pm_soccer_fotmob_shadow
+
+[Install]
+WantedBy=multi-user.target

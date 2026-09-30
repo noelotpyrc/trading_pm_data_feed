@@ -7,7 +7,11 @@ its reference is `results/13_reference_cell.md` / `scripts/18_reference_cell.py`
 
 SofaScore now prefers the website API over IPv4, with the original API hostname
 as fallback. [The second-source plan](SECOND_SCORE_SOURCE_PLAN.md) describes the
-remaining FotMob shadow-collection work; FotMob is not enabled.
+remaining provider-selection work. The [FotMob shadow collector](FOTMOB_SHADOW.md)
+is built and tested as a separate sidecar; it is not enabled in production.
+The optional `--fotmob-shadow-dir` flag lets fresh FotMob observations open
+candidate-based book windows during SofaScore outages. It preserves original
+fire/filter results; see the shadow collector guide for policy and activation.
 
 ## Run
 
