@@ -3,9 +3,17 @@ Host pm-fotmob-shadow
     User soccer-relay
     IdentityFile /Users/noel/.ssh/pm_soccer_relay_ed25519
     IdentitiesOnly yes
+    IdentityAgent none
+    BatchMode yes
     UserKnownHostsFile /Users/noel/services/pm-soccer-score-worker/known_hosts
     StrictHostKeyChecking yes
+    HostKeyAlias pm-soccer-vps
+    HostKeyAlgorithms ssh-ed25519
+    GlobalKnownHostsFile /dev/null
+    UpdateHostKeys no
     ExitOnForwardFailure yes
+    ConnectTimeout 10
+    ConnectionAttempts 1
     ServerAliveInterval 10
     ServerAliveCountMax 3
     LocalForward 127.0.0.1:18766 127.0.0.1:18766
