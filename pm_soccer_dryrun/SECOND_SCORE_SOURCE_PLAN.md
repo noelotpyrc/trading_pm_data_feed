@@ -92,8 +92,11 @@ supported data-feed agreement.
 
 ### Polling and payloads
 
-- Initially request required match lists every ten seconds and tracked in-play
-  details every ten seconds. The observed
+- Request tracked details every ten seconds using retained verified match IDs.
+  Discover only new/unresolved matches, retrying at most once per minute. Daily
+  list absence does not revoke a verified mapping; validate identity directly
+  from every fresh detail response. Restart seeds use existing recorded identity
+  evidence and require a fresh response before any score is accepted. The observed
   cache headers specify ten-second caching; polling every five seconds cannot
   be assumed to give five-second freshness. Pace fixture/detail work globally,
   bound concurrency, and measure request load with multiple simultaneous games.

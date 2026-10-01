@@ -13,7 +13,9 @@ services into their respective data directories. Previous recordings remain
 intact. Deployment backup and rollback script:
 `/root/pm-soccer-fotmob-deploy-20260930/`.
 
-Runtime code is commit `de46990` (including the SSH host-alias correction).
+Primary runtime code is commit `de46990` (including the SSH host-alias correction).
+The FotMob collector has a subsequent update that retains verified IDs and
+limits discovery to new/unresolved matches, independently of detail polling.
 Genie uses system LaunchDaemons and does not require a desktop login. The
 FotMob tunnel reuses the verified `pm-soccer-vps` host-key pin with strict checking.
 
@@ -86,12 +88,31 @@ systemd template additionally makes primary data read-only, limits memory to
   the receiver then, including the primary snapshot age and stale flag. These
   diagnose disagreements; they neither establish ground truth nor amend fires.
 
-The worker requests a cycle every ten seconds, with a global minimum 0.5-second
-spacing between HTTP requests and independent 403/429 backoff. It emits
-heartbeats while HTTP work runs. There is no HTTP traffic when scope is empty.
+The worker requests tracked-match details every ten seconds, with a global
+minimum 0.5-second spacing between HTTP requests and independent 403/429 backoff.
+Daily fixture discovery runs only for new/unresolved matches and retries at
+most once per minute per match. A completely mapped batch makes no daily-list
+requests. Unverified team/competition identities are reported without repeatedly
+requesting fixtures that cannot resolve them. It emits heartbeats while HTTP
+work runs. There is no HTTP traffic when scope is empty.
 Cycles can take longer than ten seconds with many matches or slow requests;
 observed timestamps expose the actual cadence. Responses advertised ten-second
 caching, so this is not a promise of ten-second goal-reporting latency.
+
+Verified IDs stay in memory while the primary match identity remains in scope;
+a team/kickoff or primary-session change clears that worker cache. Discovery
+failure cannot interrupt already mapped detail requests. Every fresh detail
+response validates ID, team pair/orientation, competition and kickoff; identity
+failure invalidates the mapping, while a 404 keeps the ID and retries details
+after one minute. Other matches keep collecting through per-match failures.
+
+On restart, the receiver can seed IDs using identity evidence in existing
+recordings. It verifies payload hashes, team IDs and the original tracked kickoff
+before passing a seed. The worker still requires a new validated detail response
+before publishing a score. Old scores/timestamps are never replayed, and no new
+journal or database is added. Health rows include discovery/detail attempt counts
+to verify that routine collection avoids redundant discovery. Match-list payloads
+are retained only when discovery actually establishes a mapping.
 
 ## Plugging it in without restarting production
 

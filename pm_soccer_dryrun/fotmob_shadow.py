@@ -21,12 +21,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .fotmob import (FotmobClient, FotmobError, aliases_from, alias_digest,
-                     fixtures, resolve, dates_for, normalize)
+                     fixtures, resolve, dates_for, normalize, utc_ms)
 from .lifecycle import collection_end
 from .relay import Wire, MAX_FRAME
 from .storage import Store, RecordingError, day, dumps, now_ms, process_lock
 
 VERSION = 1
+DISCOVERY_RETRY_MS = 60_000
 LOG = logging.getLogger(__name__)
 
 
@@ -97,9 +98,89 @@ def detail_snapshot(payload):
     return raw
 
 
+def detail_fixture(payload):
+    """Build identity evidence from the current detail response, not an old list."""
+    general, header = payload['general'], payload['header']
+    teams, status_raw = header['teams'], header['status']
+    if not isinstance(general, dict) or not isinstance(status_raw, dict) or len(teams) != 2:
+        raise ValueError('Expected two FotMob teams')
+    kickoff = utc_ms(general.get('matchTimeUTCDate'))
+    if kickoff is None or utc_ms(status_raw.get('utcTime')) != kickoff:
+        raise ValueError('Missing/conflicting FotMob kickoff')
+    for role, team in zip(('homeTeam', 'awayTeam'), teams):
+        general_team = general.get(role)
+        if not isinstance(team, dict) or not isinstance(general_team, dict) or general_team.get('id') != team.get('id'):
+            raise ValueError('Conflicting FotMob team identity')
+    return {'match': {'id': int(general['matchId']), 'home': teams[0], 'away': teams[1],
+                      'status': status_raw},
+            'league': {'id': general.get('leagueId'),
+                       'parentLeagueId': general.get('parentLeagueId')}}
+
+
+def verified_detail(match, mapping, payload, aliases):
+    verified = resolve(match, [detail_fixture(payload)], aliases)
+    if verified.get('status') != 'matched' or any(verified.get(k) != mapping.get(k)
+            for k in ('fotmob_match_id', 'swapped', 'team_ids')):
+        raise ValueError('FotMob detail identity mismatch')
+    return verified
+
+
 class ShadowSink:
     def __init__(self, store):
         self.store = store
+        self.mappings = {}
+        self._loaded_seeds = None
+
+    def mapping_seeds(self, scope, aliases):
+        """Reuse only IDs/evidence from recordings; never replay their old scores."""
+        if scope and self._loaded_seeds is None:
+            latest = {}
+            # Read once, outside the primary process. Old observations are only
+            # identity hints; a fresh detail request is still mandatory.
+            for session in sorted(self.store.root.parent.glob('*')):
+                for path in sorted((session/'observations').glob('*.jsonl')):
+                    with path.open() as f:
+                        for line in f:
+                            if not line.endswith('\n'): continue
+                            try:
+                                row = json.loads(line)
+                                if row.get('mapping', {}).get('status') == 'matched':
+                                    latest[row['slug']] = (session, row)
+                            except (ValueError, KeyError, TypeError):
+                                continue
+            self._loaded_seeds = latest
+        allowed = {m['slug'] for m in scope}
+        self.mappings = {k:v for k,v in self.mappings.items() if k in allowed}
+        out = {}
+        for match in scope:
+            slug = match['slug']
+            mapping = self.mappings.get(slug)
+            if mapping is None and slug in (self._loaded_seeds or {}):
+                session, row = self._loaded_seeds[slug]
+                try:
+                    identity = row['mapping']
+                    if identity['kickoff_ms']-identity['kickoff_delta_ms'] != match['kickoff_ms']:
+                        continue
+                    relative = row['raw_payload_path']
+                    payload_path = (session/relative).resolve()
+                    if not payload_path.is_relative_to(session.resolve()):
+                        raise ValueError('FotMob payload path escapes session')
+                    raw = gzip.decompress(payload_path.read_bytes())
+                    if hashlib.sha256(raw).hexdigest() != row['payload_sha256']:
+                        raise ValueError('FotMob payload digest mismatch')
+                    payload = json.loads(raw)
+                    fixture = payload if row['payload_kind'] == 'match_list' else detail_fixture(payload)
+                    mapping = resolve(match, [fixture], aliases)
+                except (OSError, EOFError, ValueError, KeyError, TypeError):
+                    mapping = None
+            if mapping and mapping.get('status') == 'matched':
+                if mapping.get('kickoff_ms', 0)-mapping.get('kickoff_delta_ms', 0) != match['kickoff_ms']:
+                    continue
+                verified = resolve(match, [mapping['fixture']], aliases)
+                if verified.get('status') == 'matched':
+                    out[slug] = verified
+                    self.mappings[slug] = verified
+        return out
 
     def record(self, message, received_ms, scope, catalog):
         slug = message.get('slug')
@@ -109,6 +190,10 @@ class ShadowSink:
         event_id = mapping.get('fotmob_match_id')
         applied = now_ms()
         if message['kind'] == 'mapping':
+            if mapping.get('status') == 'identity_mismatch':
+                self.mappings.pop(slug, None)
+                if self._loaded_seeds is not None:
+                    self._loaded_seeds.pop(slug, None)
             self.store.append('fotmob', 'mapping', {'slug': slug, 'provider': 'fotmob',
                 'mapping': mapping, 'received_ms': received_ms, 'applied_ms': applied},
                 f'mappings/{day(applied)}.jsonl')
@@ -148,6 +233,7 @@ class ShadowSink:
                'worker_session': message['session'], 'worker_seq': message['seq'],
                'primary_session': catalog.session}
         self.store.append('fotmob', 'shadow_observation', row, f'observations/{day(applied)}.jsonl')
+        self.mappings[slug] = mapping
         primary = catalog.score_for(slug)
         if primary:
             comparable = not primary['stale'] and None not in primary['score'] + [score['home_score'], score['away_score']]
@@ -183,7 +269,8 @@ def receive_connection(conn, catalog, sink, aliases, stop):
         while not stop.is_set():
             if time.monotonic()-last_scope >= 5:
                 scope = catalog.refresh(now_ms())
-                wire.send('scope', matches=scope, primary_session=catalog.session)
+                wire.send('scope', matches=scope, primary_session=catalog.session,
+                          mapping_seeds=sink.mapping_seeds(scope, aliases))
                 last_scope = time.monotonic()
             try: message, received = wire.receive()
             except socket.timeout:
@@ -203,6 +290,8 @@ def receive_connection(conn, catalog, sink, aliases, stop):
                     if verified.get('status')!='matched' or any(verified.get(k)!=message['mapping'].get(k)
                          for k in ('fotmob_match_id','swapped','team_ids')):
                         raise ValueError('Receiver rejected worker mapping')
+                    if message['payload_kind'] == 'match_details':
+                        verified_detail(m, verified, message['payload'], aliases)
                 sink.record(message, received, scope, catalog)
             elif kind == 'health': status(sink.store, 'worker', report=message.get('report'))
             elif kind != 'heartbeat': raise ValueError('Unexpected FotMob message')
@@ -211,45 +300,127 @@ def receive_connection(conn, catalog, sink, aliases, stop):
         wire.close()
 
 
-def collect_cycle(client, matches, aliases, send, stop):
+class CollectionState:
+    """Verified IDs and retry deadlines in memory, scoped to primary identity."""
+    def __init__(self):
+        self.primary_session = None
+        self.entries = {}
+
+    def prepare(self, matches, aliases, primary_session, seeds):
+        if primary_session != self.primary_session:
+            self.entries.clear()
+            self.primary_session = primary_session
+        allowed = {m['slug'] for m in matches}
+        self.entries = {k:v for k,v in self.entries.items() if k in allowed}
+        for match in matches:
+            slug = match['slug']
+            identity = tuple(match[k] for k in ('home', 'away', 'kickoff_ms'))
+            if self.entries.get(slug, {}).get('identity') == identity:
+                continue
+            entry = {'identity': identity, 'mapping': None, 'lookup_after_ms': 0,
+                     'detail_after_ms': 0, 'last_mapping': None}
+            seed = seeds.get(slug)
+            if seed:
+                verified = resolve(match, [seed['fixture']], aliases)
+                if verified.get('status') == 'matched':
+                    entry['mapping'] = verified
+            self.entries[slug] = entry
+
+
+def collect_cycle(client, matches, aliases, send, stop, state=None,
+                  primary_session=None, seeds=None):
+    state = state if state is not None else CollectionState()
+    state.prepare(matches, aliases, primary_session, seeds or {})
     if not matches:
         send('health', report={'state':'idle', 'tracked_matches':0})
         return
-    candidates, observations = [], {}
-    for date in dates_for(matches):
-        if stop.is_set(): return
-        p, timing = client.get('matches', date=date, timezone='UTC', ccode3='USA')
-        for item in fixtures(p):
-            candidates.append(item)
-            observations[item['match']['id']] = (item, timing)
+    due, candidates, observations = [], [], {}
+    discovery_attempts, detail_attempts = 0, 0
+    discovery_error = None
+    for match in matches:
+        entry = state.entries[match['slug']]
+        if entry['mapping'] is not None or now_ms() < entry['lookup_after_ms']:
+            continue
+        eligibility = resolve(match, [], aliases)
+        if eligibility['status'] != 'missing':
+            # Unverified team/competition cannot be fixed by another HTTP poll.
+            if entry['last_mapping'] != eligibility:
+                send('mapping', slug=match['slug'], mapping=eligibility)
+                entry['last_mapping'] = eligibility
+            entry['lookup_after_ms'] = float('inf')
+        else:
+            entry['lookup_after_ms'] = now_ms() + DISCOVERY_RETRY_MS
+            due.append(match)
+    try:
+        # Request each needed date once, for unresolved matches only. A fully
+        # mapped batch performs no fixture-list requests at all.
+        for date in dates_for(due):
+            if stop.is_set(): return
+            discovery_attempts += 1
+            p, timing = client.get('matches', date=date, timezone='UTC', ccode3='USA')
+            for item in fixtures(p):
+                candidates.append(item)
+                observations[item['match']['id']] = (item, timing)
+    except FotmobError as exc:
+        discovery_error = exc
+        send('health', report={'state':'discovery_error', 'error':str(exc), 'status':exc.status,
+                              'backoff_until_ms':exc.until_ms})
+    for match in due:
+        entry = state.entries[match['slug']]
+        if discovery_error:
+            entry['lookup_after_ms'] = max(entry['lookup_after_ms'], discovery_error.until_ms)
+            continue
+        mapping = resolve(match, candidates, aliases)
+        send('mapping', slug=match['slug'], mapping={k:v for k,v in mapping.items() if k!='fixture'})
+        entry['last_mapping'] = mapping
+        if mapping['status'] == 'matched':
+            entry['mapping'] = mapping
+            item, timing = observations[mapping['fotmob_match_id']]
+            send('observation', slug=match['slug'], mapping=mapping, payload_kind='match_list', payload=item, timing=timing)
     matched, detailed, detail_errors = 0, 0, 0
     for match in matches:
         if stop.is_set(): return
-        mapping = resolve(match, candidates, aliases)
-        send('mapping', slug=match['slug'], mapping={k:v for k,v in mapping.items() if k!='fixture'})
-        if mapping['status'] != 'matched': continue
+        entry = state.entries[match['slug']]
+        mapping = entry['mapping']
+        if mapping is None: continue
         matched += 1
-        item, timing = observations[mapping['fotmob_match_id']]
-        send('observation', slug=match['slug'], mapping=mapping, payload_kind='match_list', payload=item, timing=timing)
+        if now_ms() < entry['detail_after_ms']:
+            detail_errors += 1
+            continue
         try:
+            detail_attempts += 1
             p, timing = client.get('matchDetails', matchId=str(mapping['fotmob_match_id']))
+            try:
+                mapping = verified_detail(match, mapping, p, aliases)
+            except (ValueError, KeyError, TypeError) as exc:
+                entry.update(mapping=None, lookup_after_ms=now_ms()+DISCOVERY_RETRY_MS)
+                matched -= 1
+                send('mapping', slug=match['slug'], mapping={'status':'identity_mismatch',
+                     'fotmob_match_id':mapping['fotmob_match_id'], 'error':str(exc)})
+                raise FotmobError(f'Invalid FotMob detail identity: {exc}') from exc
+            entry['mapping'] = mapping
             retained = send('observation', slug=match['slug'], mapping=mapping, payload_kind='match_details',
                             payload=detail_snapshot(p), timing=timing)
             if retained is False: detail_errors += 1
             else: detailed += 1
         except FotmobError as exc:
             detail_errors += 1
+            entry['detail_after_ms'] = max(exc.until_ms, now_ms()+DISCOVERY_RETRY_MS if exc.status==404 else 0)
             send('health', report={'state':'detail_error','slug':match['slug'],'error':str(exc),
                                   'status':exc.status,'backoff_until_ms':exc.until_ms})
-            if exc.until_ms: return
-    state = 'detail_error' if detail_errors else 'mapping_gap' if matched < len(matches) else 'ok'
-    send('health', report={'state':state,'tracked_matches':len(matches),
-                          'mapped_matches':matched,'detail_observations':detailed})
+            # Continue other matches after a per-match failure. The client
+            # itself enforces provider-wide cooldowns without extra HTTP calls.
+    cycle_state = 'detail_error' if detail_errors else 'mapping_gap' if matched < len(matches) else 'ok'
+    send('health', report={'state':cycle_state,'tracked_matches':len(matches),
+                          'mapped_matches':matched,'detail_observations':detailed,
+                          'discovery_matches':len(due), 'discovery_attempts':discovery_attempts,
+                          'detail_attempts':detail_attempts})
 
 
-def work_connection(sock, client, aliases, stop, interval=10):
+def work_connection(sock, client, aliases, stop, interval=10, state=None):
+    state = state if state is not None else CollectionState()
     wire = Wire(sock); ended = threading.Event(); lock = threading.Lock()
-    scope, last_scope = [], [0.]
+    scope, last_scope, configuration = [], [0.], {'primary_session':None, 'mapping_seeds':{}}
     wire.send('fotmob_hello', version=VERSION, aliases=alias_digest(aliases))
     def send(kind, **fields):
         if stop.is_set() or ended.is_set(): raise ConnectionError('Shadow connection closed')
@@ -259,12 +430,16 @@ def work_connection(sock, client, aliases, stop, interval=10):
     def collect():
         while not stop.is_set() and not ended.is_set():
             started = time.monotonic()
-            with lock: current=list(scope); fresh=last_scope[0] and started-last_scope[0] < 20
+            with lock:
+                current = list(scope)
+                config = dict(configuration)
+                fresh = last_scope[0] and started-last_scope[0] < 20
             if not fresh:
                 ended.wait(.5)
                 continue
             try:
-                collect_cycle(client, current, aliases, send, ended)
+                collect_cycle(client, current, aliases, send, ended, state,
+                              config['primary_session'], config['mapping_seeds'])
             except FotmobError as exc:
                 try:
                     send('health', report={'state':'error','error':str(exc),'status':exc.status,'backoff_until_ms':exc.until_ms})
@@ -286,7 +461,11 @@ def work_connection(sock, client, aliases, stop, interval=10):
                 continue
             last_in=time.monotonic()
             if msg.get('kind')!='scope': raise ValueError('Unexpected FotMob receiver message')
-            with lock: scope[:]=msg['matches']; last_scope[0]=time.monotonic()
+            with lock:
+                scope[:] = msg['matches']
+                last_scope[0] = time.monotonic()
+                configuration.update(primary_session=msg.get('primary_session'),
+                                     mapping_seeds=msg.get('mapping_seeds', {}))
     finally:
         ended.set(); thread.join(timeout=12); wire.close()
         if thread.is_alive(): raise RuntimeError('FotMob HTTP thread failed to stop')
@@ -313,10 +492,11 @@ def main(argv=None):
         timer=threading.Timer(args.duration,stop.set); timer.daemon=True; timer.start()
     if args.mode=='worker':
         client=FotmobClient()
+        state=CollectionState()
         while not stop.is_set():
             try:
                 with socket.create_connection(('127.0.0.1',args.port),timeout=5) as sock:
-                    work_connection(sock,client,aliases,stop,args.interval)
+                    work_connection(sock,client,aliases,stop,args.interval,state)
             except Exception:
                 if not stop.is_set(): LOG.exception('Shadow connection failed; retry in five seconds')
             stop.wait(5)

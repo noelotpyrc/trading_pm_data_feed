@@ -11,7 +11,8 @@ import pytest
 from pm_soccer_dryrun.fotmob import (FotmobClient, FotmobError, aliases_from, dates_for,
                                     fixtures, normalize, resolve, utc_ms)
 from pm_soccer_dryrun.fotmob_shadow import (PrimaryCatalog, ShadowSink, collect_cycle,
-                                          detail_snapshot, receive_connection, work_connection, main, send_shadow)
+                                          detail_snapshot, receive_connection, work_connection, main, send_shadow,
+                                          CollectionState)
 from pm_soccer_dryrun.storage import Store
 
 ALIASES = {'Home': {'id': 10, 'name': 'Home'}, 'Away': {'id': 20, 'name': 'Away'}}
@@ -27,9 +28,10 @@ def fixture(id=42, home=10, away=20, utc='2026-09-30T13:00:00Z'):
 
 
 def detail():
-    return {'general':{'matchId':'42','coverageLevel':'lower'},
+    return {'general':{'matchId':'42','coverageLevel':'lower','leagueId':914609,'parentLeagueId':114,
+                      'homeTeam':{'id':10},'awayTeam':{'id':20},'matchTimeUTCDate':'2026-09-30T13:00:00Z'},
             'header':{'teams':[{'id':10,'score':0},{'id':20,'score':1}],
-                      'status':{'started':True,'liveTime':{'short':'HT'}}},
+                      'status':{'utcTime':'2026-09-30T13:00:00Z','started':True,'liveTime':{'short':'HT'}}},
             'hasPendingVAR':True,'content':{'matchFacts':{'events':{'events':[
                 {'type':'Goal','minute':32},{'type':'VAR','unknown_provider_field':'keep'}]}},
                 'liveticker':{'messages':['review']},'stats':{'offline':'omit'}}}
@@ -171,6 +173,9 @@ def test_separate_relay_integration_leaves_primary_bytes_unchanged(tmp_path,monk
     class Client:
         def get(self,route,**kw):
             payload={'leagues':[{'id':914609,'primaryId':114,'matches':[f['match']]}]} if route=='matches' else detail()
+            if route=='matchDetails':
+                payload['general']['matchTimeUTCDate']=f['match']['status']['utcTime']
+                payload['header']['status']['utcTime']=f['match']['status']['utcTime']
             return payload,{'source_request_ms':at,'source_received_ms':at+1}
     def runner(fn,*a):
         try:fn(*a)
@@ -191,3 +196,138 @@ def test_separate_relay_integration_leaves_primary_bytes_unchanged(tmp_path,monk
     assert list(store.root.glob('observations/*.jsonl'))
     assert p.read_bytes()==before and not (root/'fires').exists()
     assert all(isinstance(e,ConnectionError) for e in errors)
+
+
+class FixtureClient:
+    def __init__(self):
+        self.calls=[]
+        self.listing=[fixture()]
+        self.payload=detail()
+        self.failure={}
+
+    def get(self,route,**params):
+        self.calls.append((route,params))
+        if route in self.failure: raise self.failure[route]
+        payload=({'leagues':[{'id':914609,'primaryId':114,
+                             'matches':[i['match'] for i in self.listing]}]}
+                 if route=='matches' else self.payload)
+        return payload,{'source_request_ms':KICK,'source_received_ms':KICK+1}
+
+
+def cycle(client,state,matches=None,seeds=None,session='primary'):
+    sent=[]
+    collect_cycle(client,[MATCH] if matches is None else matches,ALIASES,
+                  lambda kind,**fields:sent.append((kind,fields)),threading.Event(),state,session,seeds)
+    return sent
+
+
+def test_verified_mapping_survives_listing_disappearance_without_redundant_lookup(monkeypatch):
+    monkeypatch.setattr('pm_soccer_dryrun.fotmob_shadow.now_ms',lambda:KICK)
+    client,state=FixtureClient(),CollectionState()
+    first=cycle(client,state)
+    client.listing=[]
+    second=cycle(client,state);third=cycle(client,state)
+    assert [r for r,_ in client.calls]==['matches','matchDetails','matchDetails','matchDetails']
+    assert sum(k=='mapping' for k,_ in first+second+third)==1
+    assert [v['payload_kind'] for k,v in second if k=='observation']==['match_details']
+    assert second[-1][1]['report']['state']=='ok'
+    assert second[-1][1]['report']['discovery_matches']==0
+
+
+def test_unresolved_discovery_retries_once_per_minute(monkeypatch):
+    clock=[KICK];monkeypatch.setattr('pm_soccer_dryrun.fotmob_shadow.now_ms',lambda:clock[0])
+    client,state=FixtureClient(),CollectionState();client.listing=[]
+    cycle(client,state)
+    clock[0]+=10_000;cycle(client,state)
+    clock[0]+=49_999;cycle(client,state)
+    assert len(client.calls)==1
+    clock[0]+=1;client.listing=[fixture()];cycle(client,state)
+    assert [r for r,_ in client.calls]==['matches','matches','matchDetails']
+    cycle(client,state)
+    assert [r for r,_ in client.calls][-1]=='matchDetails'
+    assert sum(r=='matches' for r,_ in client.calls)==2
+
+
+def test_unknown_aliases_do_not_generate_useless_discovery_requests():
+    client,state=FixtureClient(),CollectionState()
+    sent=cycle(client,state,matches=[{**MATCH,'home':'Unknown'}])
+    cycle(client,state,matches=[{**MATCH,'home':'Unknown'}])
+    assert not client.calls
+    assert sent[0][1]['mapping']['status']=='team_not_whitelisted'
+
+
+def test_new_match_scope_session_and_identity_changes_control_discovery(monkeypatch):
+    monkeypatch.setattr('pm_soccer_dryrun.fotmob_shadow.now_ms',lambda:KICK)
+    client,state=FixtureClient(),CollectionState()
+    cycle(client,state)
+    cycle(client,state,matches=[MATCH,{**MATCH,'slug':'fif-home-away-second'}])
+    assert sum(r=='matches' for r,_ in client.calls)==2
+    cycle(client,state,session='new-primary')
+    assert sum(r=='matches' for r,_ in client.calls)==3
+    cycle(client,state,matches=[{**MATCH,'kickoff_ms':KICK+3600000}],session='new-primary')
+    assert sum(r=='matches' for r,_ in client.calls)==4
+    before=len(client.calls);cycle(client,state,matches=[])
+    assert not state.entries and len(client.calls)==before
+
+
+def test_discovery_failure_does_not_interrupt_already_mapped_details(monkeypatch):
+    monkeypatch.setattr('pm_soccer_dryrun.fotmob_shadow.now_ms',lambda:KICK)
+    client,state=FixtureClient(),CollectionState()
+    cycle(client,state)
+    client.failure['matches']=FotmobError('Timeout')
+    sent=cycle(client,state,matches=[MATCH,{**MATCH,'slug':'fif-home-away-new'}])
+    assert client.calls[-1][0]=='matchDetails'
+    assert any(k=='observation' and v['slug']==MATCH['slug'] for k,v in sent)
+    assert any(k=='health' and v['report']['state']=='discovery_error' for k,v in sent)
+
+
+def test_detail_404_retains_mapping_and_paces_retry(monkeypatch):
+    clock=[KICK];monkeypatch.setattr('pm_soccer_dryrun.fotmob_shadow.now_ms',lambda:clock[0])
+    client,state=FixtureClient(),CollectionState()
+    cycle(client,state)
+    client.failure['matchDetails']=FotmobError('HTTP 404',404)
+    cycle(client,state)
+    clock[0]+=10_000;cycle(client,state)
+    assert len(client.calls)==3 and state.entries[MATCH['slug']]['mapping'] is not None
+    clock[0]+=50_000;del client.failure['matchDetails'];cycle(client,state)
+    assert len(client.calls)==4 and client.calls[-1][0]=='matchDetails'
+    assert sum(r=='matches' for r,_ in client.calls)==1
+
+
+@pytest.mark.parametrize('change',['teams','competition','kickoff','id'])
+def test_changed_detail_identity_invalidates_mapping_without_accepting_score(monkeypatch,change):
+    monkeypatch.setattr('pm_soccer_dryrun.fotmob_shadow.now_ms',lambda:KICK)
+    client,state=FixtureClient(),CollectionState();cycle(client,state)
+    if change=='teams':client.payload['header']['teams'][0]['id']=999
+    elif change=='competition':client.payload['general'].update(leagueId=47,parentLeagueId=47)
+    elif change=='kickoff':
+        client.payload['general']['matchTimeUTCDate']='2026-10-01T13:00:00Z'
+        client.payload['header']['status']['utcTime']='2026-10-01T13:00:00Z'
+    else:client.payload['general']['matchId']='999'
+    sent=cycle(client,state)
+    assert not any(k=='observation' for k,_ in sent)
+    assert state.entries[MATCH['slug']]['mapping'] is None
+    assert any(k=='mapping' and v['mapping']['status']=='identity_mismatch' for k,v in sent)
+    cycle(client,state)
+    assert sum(r=='matches' for r,_ in client.calls)==1  # Retry is paced too.
+
+
+def test_restart_seed_from_existing_recording_requires_fresh_detail(tmp_path,monkeypatch):
+    monkeypatch.setattr('pm_soccer_dryrun.fotmob_shadow.now_ms',lambda:KICK)
+    root,_,_=primary(tmp_path);catalog=PrimaryCatalog(root);scope=catalog.refresh(KICK)
+    old=Store(tmp_path/'shadow/sessions/s1');sink=ShadowSink(old)
+    mapping=resolve(MATCH,[fixture()],ALIASES)
+    message={'kind':'observation','slug':MATCH['slug'],'mapping':mapping,'payload':detail(),
+             'payload_kind':'match_details','timing':{},'session':'old-worker','seq':1,'sent_ms':KICK}
+    sink.record(message,KICK,scope,catalog);old.close()
+    new=Store(tmp_path/'shadow/sessions/s2');sink=ShadowSink(new)
+    seeds=sink.mapping_seeds(scope,ALIASES)
+    assert seeds[MATCH['slug']]['fotmob_match_id']==42
+    client=FixtureClient();client.listing=[];client.payload['header']['teams'][1]['score']=2
+    sent=cycle(client,CollectionState(),seeds=seeds)
+    assert [r for r,_ in client.calls]==['matchDetails']
+    observation=next(v for k,v in sent if k=='observation')
+    assert observation['payload']['header']['teams'][1]['score']==2
+    assert not list(new.root.rglob('observations/*.jsonl'))  # Seeds did not replay old scores.
+    assert sink.mapping_seeds([{**MATCH,'kickoff_ms':KICK+3600000}],ALIASES)=={}
+    new.close()
