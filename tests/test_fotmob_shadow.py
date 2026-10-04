@@ -164,6 +164,31 @@ def test_bundled_aliases_have_real_provider_ids():
     assert a['Botswana']['id']==5887
 
 
+@pytest.mark.parametrize('slug,home,away,home_id,away_id,event_id,league_id,kickoff,swapped', [
+    ('fif-civ-cmr-2026-10-03', "Côte d'Ivoire", 'Cameroon', 6709, 6629,
+     6299697, 114, '2026-10-03T19:00:00Z', True),
+    ('bra-cam-bra-2026-10-03', 'CA Mineiro', 'Red Bull Bragantino', 10272, 109705,
+     5103569, 268, '2026-10-03T21:30:00Z', False),
+    ('mls-nyr-stl-2026-09-26', 'New York Red Bulls', 'St. Louis City SC', 6514, 1427963,
+     5071384, 130, '2026-09-30T23:30:00Z', False),
+])
+def test_provider_name_variants_resolve_recorded_fixture_identities(
+        slug, home, away, home_id, away_id, event_id, league_id, kickoff, swapped):
+    # IDs, orientation and kickoff from FotMob's dated fixture responses.
+    # The PM slug date is deliberately not used as the fixture timestamp.
+    match = {'slug': slug, 'home': home, 'away': away, 'kickoff_ms': utc_ms(kickoff)}
+    item = fixture(id=event_id, home=away_id if swapped else home_id,
+                   away=home_id if swapped else away_id, utc=kickoff)
+    item['league'] = {'id': league_id}
+    aliases = aliases_from()
+    mapping = resolve(match, [item], aliases)
+    assert mapping['status'] == 'matched'
+    assert mapping['fotmob_match_id'] == event_id and mapping['swapped'] is swapped
+    assert mapping['team_ids'] == {'home': home_id, 'away': away_id}
+    item['match']['away']['id'] = 999999
+    assert resolve(match, [item], aliases)['status'] == 'missing'
+
+
 def test_separate_relay_integration_leaves_primary_bytes_unchanged(tmp_path,monkeypatch):
     root,p,row=primary(tmp_path);at=int(time.time()*1000)
     row['kickoff_ms']=at;p.write_text(json.dumps(row)+'\n');before=p.read_bytes()

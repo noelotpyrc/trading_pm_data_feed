@@ -2,16 +2,16 @@ pm_name,status,candidate_ids
 1. FC Heidenheim 1846,unverified,
 1. FC Köln,verified_exact_name_and_competition,8722
 1. FC Slovácko,unverified,
-1. FC Union Berlin,unverified,
-1. FSV Mainz 05,unverified,
+1. FC Union Berlin,verified_reviewed_name_and_competition,8149
+1. FSV Mainz 05,verified_reviewed_name_and_competition,9905
 AA Ponte Preta,unverified,
 Aarhus GF,unverified,
 Aberdeen FC,unverified,
 AC Goianiense,unverified,
 AC Juvenes/Dogana,unverified,
-AC Milan,unverified,
+AC Milan,verified_reviewed_name_and_competition,8564
 AC Monza,verified_exact_name_and_competition,6504
-AC Sparta Praha,unverified,
+AC Sparta Praha,verified_reviewed_name_and_competition,10247
 AC Virtus,unverified,
 ACF Fiorentina,verified_exact_name_and_competition,8535
 AE Lemesoú,unverified,
@@ -43,16 +43,16 @@ APS Atrómitos Athinón,unverified,
 APÓEL,unverified,
 Apóllon Lemesoú,unverified,
 Aqtöbe FK,unverified,
-Ararat-Armenia FA,unverified,
+Ararat-Armenia FA,verified_reviewed_name_and_competition,866109
 Argentina,verified_exact_name_and_competition,6706
 Arka Gdynia,unverified,
 Armenia,verified_exact_name_and_competition,6583
 Arsenal FC,verified_exact_name_and_competition,9825
 Aruba,verified_exact_name_and_competition,262131
 AS La Jeunesse d'Esch,unverified,
-AS Monaco FC,unverified,
+AS Monaco FC,verified_exact_pm_alias_and_competition,9829
 AS Omónoia Leukosías,verified_exact_name_and_competition,8044
-AS Roma,unverified,
+AS Roma,verified_exact_pm_alias_and_competition,8686
 AS Saint-Étienne,unverified,
 AS Trenčín,unverified,
 AS Áris Thessaloníkis,unverified,
@@ -63,10 +63,10 @@ Aston Villa FC,verified_exact_name_and_competition,10252
 Atalanta BC,verified_exact_name_and_competition,8524
 Athletic Club,verified_exact_name_and_competition,8315
 Atlanta United FC,verified_exact_name_and_competition,773958
-Atlante FC,unverified,
-Atlas FC,unverified,
+Atlante FC,verified_reviewed_name_and_competition,1942
+Atlas FC,verified_exact_pm_alias_and_competition,6577
 Atlétic Club d'Escaldes,unverified,
-Atlético San Luis,unverified,
+Atlético San Luis,verified_reviewed_name_and_competition,6358
 Austin FC,verified_exact_name_and_competition,1218886
 Australia,verified_exact_name_and_competition,6716
 Austria,verified_exact_name_and_competition,8255
@@ -83,13 +83,13 @@ Bangladesh,verified_exact_name_and_competition,95797
 Bangor City FC,unverified,
 Barbados,verified_exact_name_and_competition,5886
 Barry Town United AFC,unverified,
-Bayer 04 Leverkusen,unverified,
+Bayer 04 Leverkusen,verified_exact_pm_alias_and_competition,8178
 Belarus,verified_exact_name_and_competition,10057
 Belgium,verified_exact_name_and_competition,8263
 Belize,verified_exact_name_and_competition,127409
 Benin,verified_exact_name_and_competition,5883
 Bermuda,verified_exact_name_and_competition,5943
-Beşiktaş JK,unverified,
+Beşiktaş JK,verified_reviewed_name_and_competition,10188
 Bhutan,verified_exact_name_and_competition,95800
 Birkirkara FC,unverified,
 BK Häcken,unverified,
@@ -114,17 +114,17 @@ Burkina Faso,verified_exact_name_and_competition,6323
 Burnley FC,unverified,
 Burundi,verified_exact_name_and_competition,121284
 BV Borussia 09 Dortmund,verified_exact_name_and_competition,9789
-CA Mineiro,unverified,
+CA Mineiro,verified_reviewed_name_and_competition,10272
 CA Osasuna,verified_exact_name_and_competition,8371
-CA Paranaense,unverified,
-Cabo Verde,unverified,
+CA Paranaense,verified_exact_pm_alias_and_competition,10273
+Cabo Verde,verified_reviewed_name_and_competition,5888
 Cagliari Calcio,verified_exact_name_and_competition,8529
 Cambodia,verified_exact_name_and_competition,6332
 Cameroon,verified_exact_name_and_competition,6629
 Canada,verified_exact_name_and_competition,5810
 Cardiff Metropolitan University FC,unverified,
 Cayman Islands,verified_exact_name_and_competition,287982
-CD Guadalajara,unverified,
+CD Guadalajara,verified_reviewed_name_and_competition,7807
 CD Leganés,unverified,
 CD Tiburones Rojos de Veracruz,unverified,
 Ceará SC,unverified,
@@ -135,9 +135,9 @@ Cercle Brugge KSV,unverified,
 CF América,verified_exact_name_and_competition,6576
 CF Cruz Azul,verified_exact_name_and_competition,6578
 CF Lobos de la BUAP,unverified,
-CF Monterrey,unverified,
+CF Monterrey,verified_exact_pm_alias_and_competition,7849
 CF Montréal,verified_exact_name_and_competition,161195
-CF Pachuca,unverified,
+CF Pachuca,verified_exact_pm_alias_and_competition,7848
 Chad,unverified,
 Charlotte FC,verified_exact_name_and_competition,1323940
 Chelsea FC,verified_exact_name_and_competition,8455
@@ -147,12 +147,12 @@ China PR,verified_exact_name_and_competition,5822
 Chinese Taipei,unverified,
 Cliftonville FC,unverified,
 Club Atlético de Madrid,verified_exact_name_and_competition,9906
-Club Brugge KV,unverified,
-Club León FC,unverified,
-Club Necaxa,unverified,
-Club Puebla,unverified,
+Club Brugge KV,verified_exact_pm_alias_and_competition,8342
+Club León FC,verified_exact_pm_alias_and_competition,1841
+Club Necaxa,verified_exact_pm_alias_and_competition,1842
+Club Puebla,verified_exact_pm_alias_and_competition,7847
 Club Santos Laguna,verified_exact_name_and_competition,7857
-Club Tijuana,unverified,
+Club Tijuana,verified_exact_pm_alias_and_competition,162418
 Clube do Remo,verified_exact_name_and_competition,1626
 Coleraine FC,unverified,
 Colombia,verified_exact_name_and_competition,8258
@@ -185,12 +185,12 @@ Cuiabá EC,unverified,
 Curaçao,verified_exact_name_and_competition,287981
 Cyprus,verified_exact_name_and_competition,5793
 Czechia,verified_exact_name_and_competition,8496
-Côte d'Ivoire,unverified,
+Côte d'Ivoire,verified_reviewed_name_and_competition,6709
 D.C. United SC,verified_exact_name_and_competition,6602
 Debreceni VSC,unverified,
 Denmark,verified_exact_name_and_competition,8238
 Deportivo Alavés,verified_exact_name_and_competition,9866
-Deportivo Toluca FC,unverified,
+Deportivo Toluca FC,verified_exact_pm_alias_and_competition,6618
 Derry City FC,unverified,
 Dinamo 1948,unverified,
 Djibouti,verified_exact_name_and_competition,121285
@@ -226,12 +226,12 @@ Faroe Islands,verified_exact_name_and_competition,8269
 FC Admira Wacker,unverified,
 FC Arouca,unverified,
 FC Atert Bissen,unverified,
-FC Augsburg,unverified,
+FC Augsburg,verified_exact_pm_alias_and_competition,8406
 FC Ballkani,unverified,
 FC Baník Ostrava,unverified,
-FC Barcelona,unverified,
+FC Barcelona,verified_exact_pm_alias_and_competition,8634
 FC Basel 1893,unverified,
-FC Bayern München,unverified,
+FC Bayern München,verified_reviewed_name_and_competition,9823
 FC Botoşani,unverified,
 FC CFR 1907 Cluj,unverified,
 FC Cincinnati,verified_exact_name_and_competition,722265
@@ -267,10 +267,10 @@ FC Petrocub Hînceşti,unverified,
 FC Porto,verified_exact_name_and_competition,9773
 FC Prishtina,unverified,
 FC Progrès Niederkorn,unverified,
-FC Red Bull Salzburg,unverified,
+FC Red Bull Salzburg,verified_reviewed_name_and_competition,10013
 FC Santa Coloma,unverified,
 FC Saxan Gagauz Yeri,unverified,
-FC Schalke 04,unverified,
+FC Schalke 04,verified_reviewed_name_and_competition,10189
 FC Sfîntul Gheorghe,unverified,
 FC Sheriff Tiraspol,unverified,
 FC Shkupi,unverified,
@@ -287,7 +287,7 @@ FC Universitatea Cluj,unverified,
 FC Utrecht,unverified,
 FC Vaduz,unverified,
 FC Viitorul Constanţa,unverified,
-FC Viktoria Plzeň,unverified,
+FC Viktoria Plzeň,verified_reviewed_name_and_competition,6033
 FC Zimbru Chişinău,unverified,
 FC Zlín,unverified,
 FC Zürich,unverified,
@@ -296,7 +296,7 @@ FCSB,unverified,
 FCV Farul Constanţa,unverified,
 Fehérvár FC,unverified,
 Fenerbahçe SK,verified_exact_name_and_competition,8695
-Ferencvárosi TC,unverified,
+Ferencvárosi TC,verified_exact_pm_alias_and_competition,8222
 Feyenoord Rotterdam,verified_exact_name_and_competition,10235
 FH Hafnarfjörður,unverified,
 Figueirense FC,unverified,
@@ -397,7 +397,7 @@ Girona FC,unverified,
 GKS Piast Gliwice,unverified,
 Glenavon FC,unverified,
 Glentoran FC,unverified,
-GNK Dinamo Zagreb,unverified,
+GNK Dinamo Zagreb,verified_reviewed_name_and_competition,10156
 Go Ahead Eagles,unverified,
 Goiás EC,unverified,
 Granada CF,unverified,
@@ -429,7 +429,7 @@ HNK Rijeka,unverified,
 Holstein Kiel,unverified,
 Honduras,verified_exact_name_and_competition,5808
 Hong Kong SAR,verified_exact_name_and_competition,6322
-Houston Dynamo,unverified,
+Houston Dynamo,verified_reviewed_name_and_competition,8259
 Hull City AFC,verified_exact_name_and_competition,8667
 Hungary,verified_exact_name_and_competition,8565
 HŠK Zrinjski Mostar,unverified,
@@ -498,22 +498,22 @@ Leeds United FC,verified_exact_name_and_competition,8463
 Legia Warszawa,unverified,
 Leicester City FC,unverified,
 Lesotho,verified_exact_name_and_competition,4167
-Levante UD,unverified,
+Levante UD,verified_exact_pm_alias_and_competition,8581
 Liberia,verified_exact_name_and_competition,5804
 Libya,verified_exact_name_and_competition,6328
 Liechtenstein,verified_exact_name_and_competition,5799
 Lille OSC,verified_exact_name_and_competition,8639
-Lillestrøm SK,unverified,
+Lillestrøm SK,verified_reviewed_name_and_competition,8476
 Lincoln Red Imps FC,unverified,
 Linfield FC,unverified,
 Lithuania,verified_exact_name_and_competition,8254
-Liverpool FC,unverified,
+Liverpool FC,verified_exact_pm_alias_and_competition,8650
 Llandudno FC,unverified,
 Los Angeles FC,verified_exact_name_and_competition,867280
 Los Angeles Galaxy,verified_exact_name_and_competition,6637
 Luxembourg,verified_exact_name_and_competition,5792
 Lyngby BK,unverified,
-Macau,unverified,
+Macau,verified_reviewed_name_and_competition,4175
 Madagascar,verified_exact_name_and_competition,5809
 Malawi,verified_exact_name_and_competition,6020
 Malaysia,unverified,
@@ -551,7 +551,7 @@ Mozambique,verified_exact_name_and_competition,5965
 MS Maccabi Petah Tikva,unverified,
 MTK Budapest,unverified,
 Myanmar,verified_exact_name_and_competition,8307
-Málaga CF,unverified,
+Málaga CF,verified_reviewed_name_and_competition,9864
 MŠK Žilina,unverified,
 Namibia,verified_exact_name_and_competition,5802
 Nashville SC,verified_exact_name_and_competition,915807
@@ -563,7 +563,7 @@ Netherlands,verified_exact_name_and_competition,6708
 New Caledonia,verified_exact_name_and_competition,101595
 New England Revolution,verified_exact_name_and_competition,6580
 New York City FC,verified_exact_name_and_competition,546238
-New York Red Bulls,unverified,
+New York Red Bulls,verified_reviewed_name_and_competition,6514
 New Zealand,verified_exact_name_and_competition,5820
 Newcastle United FC,verified_exact_name_and_competition,10261
 Newtown AFC,unverified,
@@ -591,12 +591,12 @@ Odds BK,unverified,
 OFI,verified_exact_name_and_competition,7753
 OFK Titograd,unverified,
 OGC Nice,verified_exact_name_and_competition,9831
-Olympiakós SFP,unverified,
-Olympique de Marseille,unverified,
-Olympique Lyonnais,unverified,
+Olympiakós SFP,verified_reviewed_name_and_competition,8638
+Olympique de Marseille,verified_exact_pm_alias_and_competition,8592
+Olympique Lyonnais,verified_exact_pm_alias_and_competition,9748
 Oman,verified_exact_name_and_competition,5824
 Ordabasy FK,unverified,
-Orlando City SC,unverified,
+Orlando City SC,verified_reviewed_name_and_competition,267810
 Paderborn,verified_exact_name_and_competition,8460
 Paide Linnameeskond,unverified,
 Pakistan,verified_exact_name_and_competition,5910
@@ -634,7 +634,7 @@ Portland Timbers,verified_exact_name_and_competition,307690
 Portugal,verified_exact_name_and_competition,8361
 PSV,verified_exact_name_and_competition,8640
 Puerto Rico,verified_exact_name_and_competition,5756
-Pumas de la UNAM,unverified,
+Pumas de la UNAM,verified_reviewed_name_and_competition,1946
 Puskás Akadémia FC,unverified,
 Pyunik FA,unverified,
 Páfos FC,unverified,
@@ -644,7 +644,7 @@ Qarabağ Ağdam FK,unverified,
 Qatar,verified_exact_name_and_competition,5902
 Querétaro FC,verified_exact_name_and_competition,1943
 Qəbələ İK,unverified,
-Racing Club de Lens,unverified,
+Racing Club de Lens,verified_exact_pm_alias_and_competition,8588
 Racing FC Union Lëtzebuerg,unverified,
 Rams Başakşehir FK,unverified,
 Randers FC,unverified,
@@ -652,18 +652,18 @@ Rangers FC,unverified,
 Rayo Vallecano de Madrid,verified_exact_name_and_competition,8370
 RB Leipzig,verified_exact_name_and_competition,178475
 RC Celta de Vigo,verified_exact_name_and_competition,9910
-RC Deportivo A Coruña,unverified,
-RC Strasbourg Alsace,unverified,
+RC Deportivo A Coruña,verified_reviewed_name_and_competition,9783
+RC Strasbourg Alsace,verified_exact_pm_alias_and_competition,9848
 RCD Espanyol de Barcelona,verified_exact_name_and_competition,8558
 RCD Mallorca,unverified,
 Real Betis Balompié,verified_exact_name_and_competition,8603
 Real Madrid CF,verified_exact_name_and_competition,8633
 Real Oviedo,unverified,
-Real Racing Club,unverified,
+Real Racing Club,verified_reviewed_name_and_competition,8696
 Real Salt Lake,verified_exact_name_and_competition,6606
 Real Sociedad de Fútbol,verified_exact_name_and_competition,8560
 Real Valladolid CF,unverified,
-Red Bull Bragantino,unverified,
+Red Bull Bragantino,verified_reviewed_name_and_competition,109705
 Republic of Ireland,verified_exact_name_and_competition,5791
 Rio Ave FC,unverified,
 RKS Raków Częstochowa,unverified,
@@ -672,8 +672,8 @@ Rosenborg BK,unverified,
 Rovaniemen PS,unverified,
 Royal Antwerp FC,unverified,
 Royal Standard de Liège,unverified,
-RSC Anderlecht,unverified,
-RU Saint-Gilloise,unverified,
+RSC Anderlecht,verified_reviewed_name_and_competition,8635
+RU Saint-Gilloise,verified_exact_pm_alias_and_competition,7978
 Russia,verified_exact_name_and_competition,8713
 Rwanda,verified_exact_name_and_competition,5885
 RZ Pellets Wolfsberger AC,unverified,
@@ -693,7 +693,7 @@ Saudi Arabia,verified_exact_name_and_competition,7795
 SBV Vitesse,unverified,
 SC Braga,unverified,
 SC Corinthians Paulista,verified_exact_name_and_competition,9808
-SC Freiburg,unverified,
+SC Freiburg,verified_exact_pm_alias_and_competition,8358
 SC Gjilani,unverified,
 SC Internacional,verified_exact_name_and_competition,8702
 SC Paderborn 07,unverified,
@@ -727,11 +727,11 @@ SK Dinamo Tbilisi,unverified,
 SK Dnipro-1,unverified,
 SK Iberia 1999,unverified,
 SK Lokomotivi Tbilisi,unverified,
-SK Puntigamer Sturm Graz,unverified,
+SK Puntigamer Sturm Graz,verified_exact_pm_alias_and_competition,10014
 SK Rapid Wien,unverified,
 SK Samtredia,unverified,
 SK Sigma Olomouc,unverified,
-SK Slavia Praha,unverified,
+SK Slavia Praha,verified_reviewed_name_and_competition,7787
 SK Torpedo Kutaisi,unverified,
 SK Tskhinvali,unverified,
 Skonto FC Rīga,unverified,
@@ -752,7 +752,7 @@ Sporting Kansas City,verified_exact_name_and_competition,6604
 Sri Lanka,verified_exact_name_and_competition,5895
 SS Folgore/Falciano,unverified,
 SS Lazio,verified_exact_name_and_competition,8543
-SSC Napoli,unverified,
+SSC Napoli,verified_exact_pm_alias_and_competition,9875
 St Johnstone FC,unverified,
 St Joseph's FC,unverified,
 St Patrick's Athletic FC,unverified,
@@ -761,16 +761,16 @@ St. Louis City SC,verified_exact_name_and_competition,1427963
 St. Lucia,verified_exact_name_and_competition,127408
 St. Vincent and the Grenadines,verified_exact_name_and_competition,5923
 Stabæk Fotball,unverified,
-Stade Brestois 29,unverified,
+Stade Brestois 29,verified_exact_pm_alias_and_competition,8521
 Stade de Reims,unverified,
-Stade Rennais FC 1901,unverified,
+Stade Rennais FC 1901,verified_exact_pm_alias_and_competition,9851
 Strømsgodset IF,unverified,
 Sudan,verified_exact_name_and_competition,5805
 Sumqayıt FK,unverified,
 Sunderland AFC,verified_exact_name_and_competition,8472
 Suriname,unverified,
-SV 07 Elversberg,unverified,
-SV Werder Bremen,unverified,
+SV 07 Elversberg,verified_reviewed_name_and_competition,8232
+SV Werder Bremen,verified_reviewed_name_and_competition,8697
 SV Zulte-Waregem,unverified,
 Sweden,verified_exact_name_and_competition,8520
 Switzerland,verified_exact_name_and_competition,6717
@@ -784,7 +784,7 @@ Tajikistan,verified_exact_name_and_competition,5898
 Tanzania,verified_exact_name_and_competition,7941
 Thailand,verified_exact_name_and_competition,5788
 The New Saints FC,unverified,
-Tigres de la UANL,unverified,
+Tigres de la UANL,verified_reviewed_name_and_competition,8561
 Timor-Leste,unverified,
 TJ Spartak Myjava,unverified,
 Tobyl FK,unverified,
@@ -798,7 +798,7 @@ Trabzonspor,unverified,
 Tre Fiori FC,unverified,
 Trinidad and Tobago,verified_exact_name_and_competition,7724
 Tromsø IL,unverified,
-TSG 1899 Hoffenheim,unverified,
+TSG 1899 Hoffenheim,verified_exact_pm_alias_and_competition,8226
 TSV Egger Glas Hartberg,unverified,
 Tunisia,verified_exact_name_and_competition,6719
 Turkmenistan,verified_exact_name_and_competition,5900
@@ -817,7 +817,7 @@ Ulisses FC,unverified,
 UMF Breiðablik,unverified,
 UMF Stjarnan,unverified,
 Union Titus Pétange,unverified,
-United Arab Emirates,unverified,
+United Arab Emirates,verified_reviewed_name_and_competition,5789
 United States,verified_exact_name_and_competition,6713
 Universitatea Craiova CS,unverified,
 University College Dublin FC,unverified,
@@ -841,7 +841,7 @@ VfB Stuttgart,verified_exact_name_and_competition,10269
 VfL Bochum,unverified,
 VfL Wolfsburg,unverified,
 Vietnam,verified_exact_name_and_competition,5894
-Viking FK,unverified,
+Viking FK,verified_reviewed_name_and_competition,8478
 Villarreal CF,verified_exact_name_and_competition,10205
 Vitória SC,unverified,
 Wales,verified_exact_name_and_competition,5790
@@ -863,4 +863,4 @@ Zirə FK,unverified,
 Újpest FC,unverified,
 Ħamrun Spartans FC,unverified,
 Şamaxı FK,unverified,
-ŠK Slovan Bratislava,unverified,
+ŠK Slovan Bratislava,verified_reviewed_name_and_competition,6019

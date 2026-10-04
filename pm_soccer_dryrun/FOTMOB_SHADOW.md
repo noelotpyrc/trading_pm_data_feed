@@ -56,14 +56,15 @@ systemd template additionally makes primary data read-only, limits memory to
 
 - Independent FotMob IDs, exact team-pair matching, competition check and a
   three-hour kickoff tolerance. Close competing candidates stay ambiguous.
-- `fotmob_team_aliases.csv` contains 333 PM aliases matched by exact normalized
-  PM/SofaScore canonical names against current men's FotMob competition
-  participants. No fuzzy matches or club-word removal. Evidence URLs are in
-  each row; `fotmob_team_aliases_audit.csv` accounts for all 865 existing aliases.
-  The other 532 remain unverified, including historical teams absent from the
+- `fotmob_team_aliases.csv` contains 398 verified PM aliases, including
+  PM-supplied aliases and explicitly reviewed FotMob name variants, checked
+  against men's competition participants. No fuzzy matches or club-word removal.
+  Evidence URLs are in each row; `fotmob_team_aliases_audit.csv` accounts for all
+  865 existing aliases. The other 467 remain unverified, including historical teams absent from the
   queried competitions. They are explicitly skipped, not silently guessed.
   Extending coverage means adding evidence-backed IDs on both shadow hosts;
-  the receiver/worker handshake checks the canonical mapping digest.
+  the receiver/worker handshake checks the canonical mapping digest. The
+  2026-10-04 audit and 65 additions are documented in `FOTMOB_TEAM_ALIASES.md`.
 - Match lists use `/api/data/matches` and UTC dates intersecting the permitted
   kickoff window. Grouped friendlies are checked against parent competition 114.
   Only mapped PM-tracked match objects are retained; global lists are discarded.
