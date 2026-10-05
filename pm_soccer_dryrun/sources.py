@@ -175,7 +175,7 @@ class SofaHTTPError(RuntimeError):
 
 
 class SofaClient:
-    """Bounded IPv4 requests with endpoint cooldowns and provider-wide rate limits.
+    """Bounded requests with automatic IP selection and endpoint cooldowns.
 
     A single request lock serializes HTTP admission across live/auxiliary threads;
     waiting and both endpoint attempts share a ten-second budget. It does not
@@ -185,7 +185,7 @@ class SofaClient:
         from curl_cffi import requests, CurlOpt
         factory = session_factory or requests.Session
         self.endpoints = [SOFA, SOFA_FALLBACK]
-        self.sessions = {url: factory(curl_options={CurlOpt.IPRESOLVE: 1}) for url in self.endpoints}
+        self.sessions = {url: factory(curl_options={CurlOpt.IPRESOLVE: 0}) for url in self.endpoints}
         self.health = {url: {"until_ms": 0, "status": None} for url in self.endpoints}
         self.until_ms, self.status = 0, None  # Provider-wide 429 cooldown only.
         self.lock = threading.Lock()
@@ -209,7 +209,8 @@ class SofaClient:
 
     def get(self, path, **params):
         deadline = self.monotonic() + 10
-        trace = {"provider": "sofascore", "address_family": "IPv4", "attempts": []}
+        trace = {"provider": "sofascore", "address_selection": "automatic",
+                 "address_family": None, "attempts": []}
         self.local.http = trace
         if not self.lock.acquire(timeout=10):
             raise TimeoutError("Sofascore request admission timed out")
@@ -233,7 +234,10 @@ class SofaClient:
                     state.update(until_ms=self.clock() + 10_000, status=503)
                     continue
                 status = response.status_code
-                attempt.update(status=status, received_ms=self.clock())
+                address = getattr(response, "primary_ip", None)
+                family = ("IPv6" if ":" in address else "IPv4") if address else None
+                trace["address_family"] = family
+                attempt.update(status=status, received_ms=self.clock(), address_family=family)
                 if status in (403, 429):
                     try:
                         error = response.json().get("error", {})

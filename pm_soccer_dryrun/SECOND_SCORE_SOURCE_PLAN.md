@@ -12,7 +12,7 @@ no recovery journal, and the existing qualifying-fire book windows.
 
 ## 1. Recommended sequence
 
-1. Restore SofaScore access with the website API over IPv4 as the preferred
+1. Restore SofaScore access with the website API and automatic IPv4/IPv6 selection as the preferred
    route. Keep the original API hostname as an independently monitored fallback.
 2. Add FotMob as a separately recorded second source in shadow mode. Initially
    it cannot change fires, score filters, match expiry, or book-window decisions.
@@ -26,8 +26,8 @@ a second provider. These are different kinds of fallback.
 
 ## 2. SofaScore endpoint routing
 
-Preferred: `https://www.sofascore.com/api/v1`, IPv4.
-Fallback: `https://api.sofascore.com/api/v1`, IPv4.
+Preferred: `https://www.sofascore.com/api/v1`, automatic IPv4/IPv6 selection.
+Fallback: `https://api.sofascore.com/api/v1`, automatic IPv4/IPv6 selection.
 Use the existing Chrome impersonation and request headers. Apply this routing
 to live scores, fixture lookups and event-detail requests, not just live polls.
 
@@ -61,7 +61,10 @@ candidate fallback, not demonstrated redundancy. Both hosts can fail together.
 - Record a diagnostic on mapping backoff with affected slug and retry deadline;
   currently a 403 can leave mapping status blank, making the outage less clear.
 
-No periodic IPv6/address rotation or CAPTCHA handling is part of this design.
+DNS and curl select the connection family normally. Each response records its
+actual connected IPv4/IPv6 family, without recording public IP addresses;
+cooldown-only observations record no connected family. No periodic address
+rotation or CAPTCHA handling is part of this design.
 
 ## 3. FotMob collection and mapping
 
@@ -168,6 +171,16 @@ no unexplained mapping gaps, bounded resource/storage cost, and independently
 tested failure/recovery. A few HTTP 200 responses are insufficient.
 
 ## 6. Diagnostic evidence
+
+On 2026-10-05, both configured hosts began returning 403 to the IPv4-pinned Genie
+worker at 09:02 EDT. Fresh requests on Genie and the local machine reproduced
+website IPv4 403 and website IPv6 200 with the same client version and headers.
+Automatic selection used IPv6 and returned 200 on both machines. Genie's event
+detail and team-fixture routes also returned 200 over IPv6. Real Chrome on the
+local machine loaded the website and its existing live API successfully. This
+isolates a working address-family path; the reason for IPv4 rejection remains
+unknown. Evidence: `data/sofa-endpoint-check-20261005/`. The client now uses
+automatic address selection and reports the actual family in relay provenance.
 
 The 2026-09-30 four-way probe found website IPv4 succeeds on both machines;
 website IPv6 succeeds locally but is challenged on Genie; the original API

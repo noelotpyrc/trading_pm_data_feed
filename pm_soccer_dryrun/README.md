@@ -5,8 +5,8 @@ It has no orders, positions, hypothetical fills, or P&L. `SPEC.md` defines the
 contract. Offline evaluation belongs in `data_analysis/inplay_momentum_feasibility`;
 its reference is `results/13_reference_cell.md` / `scripts/18_reference_cell.py`.
 
-SofaScore now prefers the website API over IPv4, with the original API hostname
-as fallback. [The second-source plan](SECOND_SCORE_SOURCE_PLAN.md) describes the
+SofaScore prefers the website API with automatic IPv4/IPv6 selection, with the
+original API hostname as fallback. [The second-source plan](SECOND_SCORE_SOURCE_PLAN.md) describes the
 remaining provider-selection work. The [FotMob shadow collector](FOTMOB_SHADOW.md)
 is deployed as a separate sidecar, with recording-only fallback capture enabled
 on 2026-09-30. The primary run is now `vps-genie-20260930-fotmob`.
@@ -68,12 +68,15 @@ may own a data directory.
   also paced to at most once per minute. Mapping rows retain verified IDs,
   missing fixture endpoints and error diagnostics; other request failures are
   logged with match slug and phase in `ops/resolver`. Successful mappings persist.
-  Auxiliary requests are paced. SofaScore uses `www.sofascore.com/api/v1` over
-  IPv4 first, then `api.sofascore.com/api/v1`. A 403 cools only its endpoint for
+  Auxiliary requests are paced. SofaScore uses `www.sofascore.com/api/v1` first,
+  then `api.sofascore.com/api/v1`, with automatic IPv4/IPv6 selection on both.
+  A 403 cools only its endpoint for
   at least three minutes; a 429 pauses both endpoints and respects Retry-After.
   Transient failures and invalid payloads can try the alternate route once.
   Requests share a ten-second budget including admission, with five seconds per
-  HTTP attempt. Route/status/cache metadata travels with relay observations into
+  HTTP attempt. Each response records its actual connected address family;
+  cooldown-only observations have no connected family. Public IP addresses are
+  not recorded. Route/status/cache metadata travels with relay observations into
   fire snapshots. Mapping backoff is explicit in the match catalog.
   Only mapped matches inside the market collection window are saved from the
   global live response. Every observation retains the complete `raw_event`,

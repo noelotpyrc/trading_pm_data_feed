@@ -11,8 +11,9 @@ from pm_soccer_dryrun import relay
 LIVE = '/sport/football/events/live'
 
 
-def response(status=200, payload=None, headers=None):
+def response(status=200, payload=None, headers=None, primary_ip=None):
     return SimpleNamespace(status_code=status, headers=headers or {},
+                           primary_ip=primary_ip,
                            json=lambda: {'events': []} if payload is None else payload)
 
 
@@ -31,13 +32,18 @@ def client_for(actions, clock=None, mono=None):
     return c, calls, options
 
 
-def test_primary_ipv4_and_provenance():
-    c, calls, options = client_for([response(headers={'Age': '1'})])
+@pytest.mark.parametrize('address,family', [('198.51.100.8', 'IPv4'), ('2001:db8::8', 'IPv6')])
+def test_primary_automatic_ip_selection_and_actual_family_provenance(address, family):
+    c, calls, options = client_for([response(headers={'Age': '1'}, primary_ip=address)])
     assert c.get(LIVE) == {'events': []}
     assert calls[0][0] == SOFA + LIVE
-    assert all(o['curl_options'][CurlOpt.IPRESOLVE] == 1 for o in options)
+    assert all(o['curl_options'][CurlOpt.IPRESOLVE] == 0 for o in options)
     assert c.last_http['hostname'] == 'www.sofascore.com'
     assert c.last_http['cache'] == {'Age': '1'}
+    assert c.last_http['address_selection'] == 'automatic'
+    assert c.last_http['address_family'] == family
+    assert c.last_http['attempts'][0]['address_family'] == family
+    assert address not in str(c.last_http)
 
 
 def test_403_fallback_sticky_then_primary_recovers():
@@ -60,6 +66,15 @@ def test_both_blocked_do_not_retry_before_cooldown():
         with pytest.raises(BackoffError) as e: c.get(LIVE)
         assert e.value.until_ms == 181000
     assert len(calls) == 2
+    assert c.last_http['address_family'] is None and c.last_http['attempts'] == []
+
+
+def test_fallback_reports_each_endpoints_actual_address_family():
+    c, _, _ = client_for([response(403, primary_ip='198.51.100.8'),
+                          response(primary_ip='2001:db8::8')])
+    c.get(LIVE)
+    assert c.last_http['address_family'] == 'IPv6'
+    assert [a['address_family'] for a in c.last_http['attempts']] == ['IPv4', 'IPv6']
 
 
 @pytest.mark.parametrize('header,expected', [('600', 600000), ('Wed, 30 Sep 2026 14:10:00 GMT', 600000), ('bad', 180000)])
