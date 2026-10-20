@@ -8,7 +8,7 @@ All in Discord server `1465846881836863796`.
 
 | Env var | Channel | Channel ID | Used by |
 |---|---|---|---|
-| `DISCORD_WEBHOOK_URL` | `#trading-signals` | `1492314707372150814` | `signal`, `liq_collector` |
+| `DISCORD_WEBHOOK_URL` | `#trading-signals` | `1492314707372150814` | `signal` (stopped 2026-07-30), `liq_collector` (stopped 2026-10-20) |
 | `DISCORD_WEBHOOK_URL_PM` | `#pm-price-alert` | `1492688541405413396` | `pm_collector` |
 | `DISCORD_WEBHOOK_URL_PM_DUAL` | `#pm-dual-price` | `1493441980968075488` | `pm_dual` |
 | `DISCORD_WEBHOOK_URL_SIGNAL_V3` | `#pm-trading-signals` | `1494415390875320330` | `signal-v3-contrarian`, `signal-v3-dir` |
@@ -57,7 +57,7 @@ Parse rule: `"LONG Signal" in content` → LONG; `"SHORT Signal" in content` →
 
 ### Type B — Individual liquidation event
 
-- **Source:** `cex_data_feed.scripts.collect_liquidations` (tmux `liq_collector`)
+- **Source:** `cex_data_feed.scripts.collect_liquidations` (tmux `liq_collector`) — ⏹ stopped 2026-10-20; no new messages after that
 - **Cadence:** real-time, one message per Binance forceOrder event
 - **Marker:** content starts with `💥 **BTCUSDT BUY Side Liquidation**` or `💥 **BTCUSDT SELL Side Liquidation**`
 
@@ -81,7 +81,7 @@ Parse rule: `"Side Liquidation" in content` → individual event; side from `"BU
 
 ### Type C — 15-min liquidation heartbeat
 
-- **Source:** `cex_data_feed.scripts.collect_liquidations` (tmux `liq_collector`), heartbeat formatter
+- **Source:** `cex_data_feed.scripts.collect_liquidations` (tmux `liq_collector`), heartbeat formatter — ⏹ stopped 2026-10-20
 - **Cadence:** every 15 minutes, regardless of activity (zero-event heartbeats are still emitted — useful as a liveness check)
 - **Marker:** content starts with `💓 **BTCUSDT Liq Heartbeat (15m)**`
 

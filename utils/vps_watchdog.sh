@@ -29,7 +29,8 @@ CONFIRM_RUNS=2
 # signal removed 2026-07-30 (stopped deliberately).
 # perp_v2 added 2026-07-30 (btcusdt_perp_signal_v2 dry run deployed).
 # perp_v2 removed 2026-09-24 (dry run stopped deliberately).
-EXPECTED_SESSIONS=(btc_depth liq_collector pm_collector pm_signal_sim)
+# liq_collector removed 2026-10-20 (stopped deliberately).
+EXPECTED_SESSIONS=(btc_depth pm_collector pm_signal_sim)
 
 # Staleness limits (seconds)
 DB_MAX_AGE=900       # cron accumulators run every 5 min
