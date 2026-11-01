@@ -7,7 +7,7 @@ from __future__ import annotations
 from decimal import Decimal
 from statistics import median
 
-from . import RULE_VERSION
+from . import CONFIRMATION_WINDOW_MS, RULE_VERSION
 from .lifecycle import collection_end
 
 
@@ -58,7 +58,7 @@ class Engine:
         self.session_id = session_id
         self.state = state or {
             "matches": {}, "books": {}, "scores": {}, "polls": [],
-            "seconds": {}, "pending": {}, "closed_before": 0, "gap_ms": None,
+            "movements": {}, "pending": {}, "advanced_ms": 0, "cleanup_ms": None, "gap_ms": None,
         }
 
     def event_id(self, seq):
@@ -127,12 +127,16 @@ class Engine:
                 "emitted_ms": observed_ms, **extra}
 
     def confirm(self, candidate, movement, observed_ms):
+        if (candidate["book_role"] == movement["book_role"] or
+                abs(candidate["candidate_recv_ms"] - movement["recv_ms"]) > CONFIRMATION_WINDOW_MS):
+            return []
         expected = implied_direction(candidate["book_role"], movement["book_role"], candidate["d"], candidate["lead_home"])
         if expected is None or (expected and expected != movement["d"]):
             return []
         candidate["cross_book"] = True
         candidate["confirming_book"] = movement["book_role"]
         candidate["confirming_event_seq"] = movement["event_seq"]
+        candidate["confirming_movement_recv_ms"] = movement["recv_ms"]
         candidate["confirmation_recv_ms"] = max(candidate["candidate_recv_ms"], movement["recv_ms"])
         fire = all_known([candidate["gate"], True, candidate["hypothesis"]])
         kind = "fire" if fire is True else "candidate_result"
@@ -140,17 +144,36 @@ class Engine:
                             fire_recv_ms=max(observed_ms, candidate["confirmation_recv_ms"]) if fire is True else None)]
 
     def advance(self, cutoff_ms, observed_ms):
-        """Finalize seconds strictly before cutoff; call only after draining input."""
-        cutoff = cutoff_ms // 1000
+        """Expire inclusive receipt-time windows; never reopen a finalized window."""
+        cutoff_ms = max(cutoff_ms, self.state["advanced_ms"])
+        self.state["advanced_ms"] = cutoff_ms
         out = []
         for key, candidates in list(self.state["pending"].items()):
-            if int(key.rsplit(":", 1)[1]) < cutoff:
-                for candidate in candidates:
+            remaining = []
+            for candidate in candidates:
+                if candidate["confirmation_deadline_ms"] < cutoff_ms:
                     out.append(self.record("candidate_result", candidate, observed_ms, cross_book=False, fire=False,
-                                           reason="second_closed", fire_recv_ms=None))
+                                           reason="confirmation_window_expired", fire_recv_ms=None))
+                else:
+                    remaining.append(candidate)
+            if remaining:
+                self.state["pending"][key] = remaining
+            else:
                 del self.state["pending"][key]
-        self.state["seconds"] = {k: v for k, v in self.state["seconds"].items() if int(k.rsplit(":", 1)[1]) >= cutoff}
-        self.state["closed_before"] = max(self.state["closed_before"], cutoff)
+        # Two windows retain prior confirmation for delayed candidates whose
+        # deadlines have not expired. confirm() still requires a <=1000 ms pair.
+        for key, movements in list(self.state["movements"].items()):
+            recent = [m for m in movements if m["recv_ms"] >= cutoff_ms - 2 * CONFIRMATION_WINDOW_MS]
+            if recent:
+                self.state["movements"][key] = recent
+            else:
+                del self.state["movements"][key]
+        # The live timer checks deadlines every 20 ms; catalog cleanup needs
+        # only a once-per-second pass, independent of depth-message volume.
+        cleanup_ms = self.state["cleanup_ms"]
+        if cleanup_ms is not None and cutoff_ms < cleanup_ms + 1000:
+            return out
+        self.state["cleanup_ms"] = cutoff_ms
         expired = {slug for slug, m in self.state["matches"].items()
                    if (end := collection_end(m)[0]) is not None and cutoff_ms > end + 60_000}
         for slug in expired:
@@ -160,6 +183,11 @@ class Engine:
         feed_ids = {str(m.get("sofa_event_id")) for m in self.state["matches"].values()}
         self.state["scores"] = {k: v for k, v in self.state["scores"].items() if k in feed_ids}
         return out
+
+    def pending_end_ms(self):
+        """First clock tick strictly after every pending inclusive deadline."""
+        return max((c["confirmation_deadline_ms"] + 1
+                    for group in self.state["pending"].values() for c in group), default=0)
 
     def handle(self, event, observed_ms):
         kind, row, seq = event["kind"], event["payload"], event["seq"]
@@ -189,10 +217,9 @@ class Engine:
         if kind != "market":
             return []
         if row["message"].get("event_type") != "last_trade_price":
-            # Continuous depth traffic must not prevent second-close records.
-            # Repeating catalog/window cleanup for every depth update within
-            # an already advanced second does no signal work.
-            if row["recv_ms"] // 1000 <= self.state["closed_before"]:
+            # The 20 ms live timer expires pending windows. Depth can advance
+            # them too, without repeating cleanup for every price update.
+            if row["recv_ms"] <= self.state["advanced_ms"]:
                 return []
             return self.advance(row["recv_ms"], observed_ms)
         recv = row["recv_ms"]
@@ -205,7 +232,7 @@ class Engine:
         if not value.is_finite() or not 0 <= value <= 1:
             raise ValueError("Invalid fill price")
         price = value if row["outcome"] == "Yes" else 1 - value
-        # Validate before closing seconds; malformed input must not consume
+        # Validate before expiring windows; malformed input must not consume
         # pending candidates without returning their terminal records.
         out = self.advance(recv, observed_ms)
         prices = self.state["books"].setdefault(match["slug"] + ":" + role, [])
@@ -217,18 +244,21 @@ class Engine:
         ref, noise = pair
         gap = price - ref
         direction = 1 if gap > 0 else -1
-        second_key = match["slug"] + ":" + str(recv // 1000)
-        closed = recv // 1000 < self.state["closed_before"]
-        late = closed or observed_ms // 1000 > recv // 1000
+        match_key = match["slug"]
+        closed = recv + CONFIRMATION_WINDOW_MS < self.state["advanced_ms"]
+        late = closed or observed_ms - recv >= CONFIRMATION_WINDOW_MS
         movement = {"event_seq": seq, "book_role": role, "d": direction, "recv_ms": recv}
         if abs(gap) > noise and not closed:
             remaining = []
-            for candidate in self.state["pending"].get(second_key, []):
+            for candidate in self.state["pending"].get(match_key, []):
                 result = self.confirm(candidate, movement, observed_ms) if candidate["book_role"] != role else []
                 out.extend(result)
                 if not result:
                     remaining.append(candidate)
-            self.state["pending"][second_key] = remaining
+            if remaining:
+                self.state["pending"][match_key] = remaining
+            else:
+                self.state["pending"].pop(match_key, None)
         if abs(gap) >= max(3 * noise, Decimal("0.05")):
             snapshot = self.score_snapshot(match, recv)
             gap_ms = self.state["gap_ms"]
@@ -236,6 +266,8 @@ class Engine:
                 "candidate_id": self.event_id(seq), "source_event_seq": seq,
                 "slug": match["slug"], "book_role": role, "token": token,
                 "candidate_recv_ms": recv, "recv_ms": recv, "exchange_timestamp": msg.get("timestamp"),
+                "confirmation_window_ms": CONFIRMATION_WINDOW_MS,
+                "confirmation_deadline_ms": recv + CONFIRMATION_WINDOW_MS,
                 "p": float(price), "ref": float(ref), "noise": float(noise), "gap": float(gap), "d": direction,
                 **snapshot, **self.checks(role, direction, ref, snapshot),
                 "cross_book": None, "confirming_book": None,
@@ -245,7 +277,7 @@ class Engine:
             out.append(self.record("candidate", candidate, observed_ms, fire=None, fire_recv_ms=None))
             result = []
             if not closed:
-                for other in self.state["seconds"].get(second_key, []):
+                for other in self.state["movements"].get(match_key, []):
                     if other["book_role"] != role:
                         result = self.confirm(candidate, other, observed_ms)
                         if result:
@@ -256,7 +288,7 @@ class Engine:
                 out.append(self.record("candidate_result", candidate, observed_ms, fire=None,
                                        reason="late_processing", fire_recv_ms=None))
             else:
-                self.state["pending"].setdefault(second_key, []).append(candidate)
+                self.state["pending"].setdefault(match_key, []).append(candidate)
         if abs(gap) > noise and not closed:
-            self.state["seconds"].setdefault(second_key, []).append(movement)
+            self.state["movements"].setdefault(match_key, []).append(movement)
         return out

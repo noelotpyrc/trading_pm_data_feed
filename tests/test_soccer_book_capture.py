@@ -150,22 +150,53 @@ def test_later_message_in_confirming_frame_is_saved_after_opening(capture):
     assert list(capture.books["homey"]["bids"].values()) == ["6"]
 
 
-def test_suppressed_depth_still_closes_second_and_is_replayable(capture):
+def test_suppressed_depth_still_expires_window_and_is_replayable(capture):
     engine = primed()
     engine.handle(fill("home", ".56", 1100, 100), 1100)
     outputs = []
     capture.store.on_event = lambda e: outputs.extend(engine.handle(e, e["payload"]["recv_ms"]))
-    receive(capture, book(), 2000)
-    receive(capture, change(), 2001)
+    receive(capture, book(), 2101)
+    receive(capture, change(), 2102)
     assert [r["kind"] for r in outputs] == ["candidate_result"]
     recorded = rows(capture, "pm_soccer")
     assert len(recorded) == 1 and recorded[0]["message"]["event_type"] == "capture_clock"
     replay = primed()
     replay.handle(fill("home", ".56", 1100, 100), 1100)
-    assert replay.handle({"kind": "market", "seq": recorded[0]["event_seq"], "payload": recorded[0]}, 2000) == outputs
+    assert replay.handle({"kind": "market", "seq": recorded[0]["event_seq"], "payload": recorded[0]}, 2101) == outputs
 
 
 @pytest.mark.parametrize("minutes", [0, -1, float("nan"), float("inf"), 1e308, 0.00000001])
 def test_invalid_window_duration(minutes):
     with pytest.raises(ValueError, match="book-window-minutes"):
         window_ms(minutes)
+
+
+def tops(capture):
+    return [r for r in rows(capture, "top")]
+
+
+def test_top_rows_track_best_levels_outside_windows(capture):
+    receive(capture, book(), 100)
+    receive(capture, {**change(price=".55", size="3"), "price_changes": [
+        {"asset_id": "homey", "price": ".55", "size": "3", "side": "BUY", "best_bid": ".55", "best_ask": ".8"},
+        {"asset_id": "homey", "price": ".8", "size": "5", "side": "SELL", "best_bid": ".55", "best_ask": ".8"}]}, 200)
+    receive(capture, change(price=".40", size="1"), 300)  # Behind the best: no row.
+    receive(capture, change(price=".8", size="0", side="SELL"), 400)  # Ask side emptied.
+    t = tops(capture)
+    assert [(r["recv_ms"], r["best_bid"], r["best_bid_size"], r["best_ask"], r["best_ask_size"]) for r in t] == [
+        (100, "0.5", "9", "0.8", "2"), (200, "0.55", "3", "0.8", "5"), (400, "0.55", "3", None, None)]
+    assert t[1]["wire_best_bid"] == ".55" and "wire_best_bid" not in t[0]
+    assert t[0]["book_role"] == "home" and t[0]["outcome"] == "Yes" and t[0]["seed_recv_ms"] == 100
+    assert depth(capture) == []  # Depth itself is still discarded outside windows.
+
+
+def test_top_rows_stop_at_gaps_and_invalid_depth_until_snapshot(capture):
+    receive(capture, [book(), book("homen", ".2")], 100)
+    capture.gap()
+    receive(capture, change(size="4"), 200)  # No ladder, no row.
+    receive(capture, book(), 300)
+    receive(capture, change(price="NaN"), 400)
+    t = tops(capture)
+    assert [r["event"] for r in t] == ["top", "top", "invalid", "top", "invalid"]
+    assert t[2]["reason"] == "gap" and t[2]["tokens"] == ["homen", "homey"]
+    assert t[4]["reason"] == "invalid_depth" and t[4]["tokens"] == ["homey"]

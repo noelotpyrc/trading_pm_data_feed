@@ -1,9 +1,9 @@
-"""Post-fire depth recording; only current ladders live in memory outside windows."""
+"""Post-fire depth recording; only current ladders live in memory outside windows, plus top-of-book rows throughout."""
 from collections import Counter
 from decimal import Decimal
 import math
 
-from .storage import day
+from .storage import day, now_ms
 
 
 def window_ms(minutes):
@@ -45,8 +45,38 @@ class BookCapture:
         self.routing = routing
 
     def gap(self):
+        self._invalid(list(self.books), now_ms(), "gap")
         self.books.clear()
         self.counts["cache_invalidations"] += 1
+
+    def _top(self, token, ms, wire=None):
+        """Top-of-book row when the ladder's best bid/ask price or size changed (whole subscription window)."""
+        book, route = self.books.get(token), self.routing.get(token)
+        if book is None or route is None:
+            return
+        bb, ba = max(book["bids"], default=None), min(book["asks"], default=None)
+        top = (bb, book["bids"].get(bb), ba, book["asks"].get(ba))
+        if top == book.get("top"):
+            return
+        book["top"] = top
+        slug, role, outcome = route
+        row = {"event": "top", "slug": slug, "asset_id": token, "book_role": role, "outcome": outcome, "recv_ms": ms,
+               "exchange_timestamp": book["exchange_timestamp"], "best_bid": None if bb is None else str(bb),
+               "best_bid_size": top[1], "best_ask": None if ba is None else str(ba), "best_ask_size": top[3],
+               "seed_recv_ms": book["seed_recv_ms"], "source": "local_book_state"}
+        if wire is not None:
+            row["wire_best_bid"], row["wire_best_ask"] = wire.get("best_bid"), wire.get("best_ask")
+        self.counts["top_rows"] += 1
+        self.store.append("collector", "top", row, f"top/{slug}/{day(ms)}.jsonl")
+
+    def _invalid(self, tokens, ms, reason):
+        by_slug = {}
+        for token in tokens:
+            if token in self.books and token in self.routing:
+                by_slug.setdefault(self.routing[token][0], []).append(token)
+        for slug, toks in by_slug.items():
+            self.store.append("collector", "top", {"event": "invalid", "slug": slug, "recv_ms": ms, "reason": reason,
+                                                   "tokens": sorted(toks)}, f"top/{slug}/{day(ms)}.jsonl")
 
     def _marker(self, slug, ms, payload):
         self.store.append("collector", "book_window", {"slug": slug, "recorded_ms": ms, **payload},
@@ -110,7 +140,9 @@ class BookCapture:
                         if not deleted:
                             book[side][price] = size
                 self.books[token] = book
+                self._top(token, ms)
             else:
+                wire = {}
                 for change, token in zip(msg["price_changes"], affected):
                     book = self.books.get(token)
                     if book is None:
@@ -122,7 +154,12 @@ class BookCapture:
                     else:
                         book[side][price] = size
                     book["recv_ms"], book["exchange_timestamp"] = ms, msg.get("timestamp")
+                    wire[token] = change
+                # One row per token per message: the state after all of its changes.
+                for token, change in wire.items():
+                    self._top(token, ms, change)
         except (KeyError, ValueError, TypeError, ArithmeticError) as exc:
+            self._invalid(affected, ms, "invalid_depth")
             for token in affected:
                 self.books.pop(token, None)
             self.counts["invalid_depth_rows"] += 1
@@ -140,7 +177,7 @@ class BookCapture:
                 self.counts["depth_discarded"] += 1
                 if self.clock_second != ms // 1000:
                     self.clock_second = ms // 1000
-                    # Preserve second-close causality/replay without saving depth.
+                    # Retain sparse receipt-clock progress without saving depth.
                     clock = {"slug": row["slug"], "recv_ms": ms, "source": "local_depth_clock",
                              "message": {"event_type": "capture_clock"}}
                     self.store.append("collector", "market", clock, f"pm_soccer/{row['slug']}/{day(ms)}.jsonl")

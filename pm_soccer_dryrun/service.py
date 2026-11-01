@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import RULE_VERSION
+from . import CONFIRMATION_WINDOW_MS, RULE_VERSION
 from .book_capture import BookCapture, window_ms
 from .engine import Engine
 from .lifecycle import collection_end, in_discovery_window
@@ -480,7 +480,7 @@ def run_live(store, stop, run_id, alias_path=None, book_window_minutes=5, relay_
         from .fotmob_capture import FotmobCapture
         fotmob = FotmobCapture(fotmob_shadow_dir, store, engine)
     # append() holds the shared lock: input and output sequences are ordered,
-    # and the timer cannot close a second midway through a websocket frame.
+    # and the timer cannot expire a window midway through a websocket frame.
     def deliver(event):
         for row in engine_batch(store, engine, [event], now_ms()):
             capture.fire(row)
@@ -509,16 +509,13 @@ def run_live(store, stop, run_id, alias_path=None, book_window_minutes=5, relay_
                                         name="fotmob-capture-input"))
     log_event(store, "engine", "session_start", session_id=store.session_id, recovery=False,
               book_window_minutes=book_window_minutes)
-    last_second = None
     try:
         for thread in workers:
             thread.start()
         while not stop.is_set():
             with store.lock:
                 ms = now_ms()
-                if ms // 1000 != last_second:
-                    engine_batch(store, engine, [], ms)
-                    last_second = ms // 1000
+                engine_batch(store, engine, [], ms)
                 store.flush()
                 daily_summary(store)
             stop.wait(0.02)
@@ -528,10 +525,9 @@ def run_live(store, stop, run_id, alias_path=None, book_window_minutes=5, relay_
             if thread.ident is not None:
                 thread.join()
         with store.lock:
-            # Let the last pending second really finish before finalizing it.
+            # Let the last pending inclusive window finish before finalizing it.
             # No synthetic observation time and no state carried across restarts.
-            pending_end = max(((int(key.rsplit(":", 1)[1]) + 1) * 1000
-                               for key in engine.state["pending"]), default=0)
+            pending_end = engine.pending_end_ms()
             time.sleep(max(0, (pending_end - now_ms()) / 1000))
             engine_batch(store, engine, [], now_ms())
             log_event(store, "engine", "session_end", session_id=store.session_id,
@@ -591,13 +587,14 @@ def main(argv=None):
             for name in ("fotmob_capture.py", "fotmob.py", "fotmob_team_aliases.csv"):
                 digest.update(Path(__file__).with_name(name).read_bytes())
         manifest = {"run_id": args.run_id, "rule_version": RULE_VERSION, "code_sha256": digest.hexdigest(),
-                    "storage_version": "post-fire-books-2", "book_window_ms": duration_ms,
+                    "confirmation_window_ms": CONFIRMATION_WINDOW_MS,
+                    "storage_version": "post-fire-books-top-4", "book_window_ms": duration_ms,
                     "team_whitelist_sha256": team_digest}
         if relay_config:
             manifest["score_relay"] = relay_config
         if args.fotmob_shadow_dir:
             from .fotmob_capture import POLICY, MAX_AGE_MS
-            manifest["storage_version"] = "post-fire-and-fallback-candidate-books-3"
+            manifest["storage_version"] = "post-fire-and-fallback-candidate-books-top-4"
             manifest["fotmob_capture"] = {"policy": POLICY, "max_age_ms": MAX_AGE_MS,
                                          "shadow_dir": str(args.fotmob_shadow_dir.resolve())}
         manifest_path = args.data_dir / "run.json"

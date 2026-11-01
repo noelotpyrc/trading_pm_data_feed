@@ -79,12 +79,109 @@ def test_prior_confirmation_fires_immediately_with_strict_noise_threshold():
     assert [r["kind"] for r in rows] == ["candidate", "fire"]  # no live lockout
 
 
-def test_second_boundary_does_not_confirm_previous_second():
+def test_second_boundary_confirms_within_rolling_window():
     engine = primed()
     engine.handle(fill("home", ".56", 1999, 100), 1999)
     result = engine.handle(fill("away", ".48", 2000, 101), 2000)
     assert len(result) == 1
-    assert result[0]["kind"] == "candidate_result" and result[0]["cross_book"] is False
+    assert result[0]["kind"] == "fire" and result[0]["cross_book"] is True
+
+
+@pytest.mark.parametrize("offset,confirms", [(-1001, False), (-1000, True), (-913, True),
+                                            (0, True), (913, True), (1000, True), (1001, False)])
+def test_rolling_confirmation_window_inclusive_in_both_directions(offset, confirms):
+    engine = primed()
+    candidate_ms, movement_ms = 3000, 3000 + offset
+    items = [fill("home", ".56", candidate_ms, 100), fill("away", ".48", movement_ms, 101)]
+    rows = []
+    for item in sorted(items, key=lambda e: e["payload"]["recv_ms"]):
+        ms = item["payload"]["recv_ms"]
+        rows.extend(engine.handle(item, ms + 1))
+    rows.extend(engine.advance(5000, 5000))
+    candidate = next(r for r in rows if r["kind"] == "candidate")
+    terminal = [r for r in rows if r["kind"] != "candidate"]
+    assert len(terminal) == 1
+    assert terminal[0]["fire"] is confirms
+    assert candidate["confirmation_window_ms"] == 1000
+    assert candidate["confirmation_deadline_ms"] == 4000
+    if confirms:
+        assert terminal[0]["confirming_movement_recv_ms"] == movement_ms
+        assert terminal[0]["confirmation_recv_ms"] == max(candidate_ms, movement_ms)
+        assert terminal[0]["fire_recv_ms"] == max(candidate_ms, movement_ms) + 1
+    else:
+        assert terminal[0]["reason"] == "confirmation_window_expired"
+
+
+def test_rolling_deadline_timer_is_inclusive_and_never_reopens():
+    engine = primed()
+    engine.handle(fill("home", ".56", 1100, 100), 1100)
+    assert engine.pending_end_ms() == 2101
+    assert engine.advance(2000, 2000) == []  # Calendar boundary is irrelevant.
+    assert engine.advance(2100, 2100) == []  # Exactly 1000 ms is still eligible.
+    result = engine.advance(2101, 2101)
+    assert len(result) == 1 and result[0]["reason"] == "confirmation_window_expired"
+    assert engine.pending_end_ms() == 0
+    assert engine.handle(fill("away", ".48", 2100, 101), 2110) == []
+    assert engine.advance(2200, 2200) == []
+
+
+def test_liverpool_parity_pair_survives_intervening_calendar_boundary():
+    # Recorded M1 receipts: 16:27:06.532 and 16:27:07.445 (913 ms).
+    engine = primed()
+    candidate_ms, movement_ms = 1792528026532, 1792528027445
+    engine.state["matches"][MATCH["slug"]]["kickoff_ms"] = candidate_ms - HOUR_MS
+    initial = engine.handle(fill("home", ".56", candidate_ms, 100), candidate_ms + 1)
+    assert initial[0]["kind"] == "candidate"
+    assert engine.advance(1792528027001, 1792528027001) == []
+    rows = engine.handle(fill("away", ".48", movement_ms, 101), movement_ms + 1)
+    assert len(rows) == 1 and rows[0]["kind"] == "fire"
+    assert rows[0]["fire_recv_ms"] == movement_ms + 1
+    assert rows[0]["f_minute30"] and rows[0]["f_leader1_up"]
+
+
+def test_same_book_or_wrong_direction_cannot_confirm_within_window():
+    engine = primed()
+    engine.handle(fill("home", ".56", 1100, 100), 1100)
+    engine.handle(fill("home", ".52", 1200, 101), 1200)
+    engine.handle(fill("away", ".52", 1300, 102), 1300)
+    result = engine.advance(2101, 2101)
+    assert len(result) == 1 and result[0]["cross_book"] is False
+
+
+def test_delayed_candidate_retains_prior_movement_until_its_deadline():
+    engine = primed()
+    engine.handle(fill("away", ".48", 1100, 99), 1100)
+    engine.advance(2900, 2900)
+    rows = engine.handle(fill("home", ".56", 2000, 100), 2900)
+    assert rows[-1]["kind"] == "fire" and rows[-1]["fire_recv_ms"] == 2900
+    engine.advance(5000, 5000)
+    assert engine.state["movements"] == {} and engine.state["pending"] == {}
+
+
+def test_candidates_in_same_match_have_independent_deadlines():
+    engine = primed()
+    engine.handle(fill("home", ".56", 1100, 100), 1100)
+    engine.handle(fill("home", ".57", 1500, 101), 1500)
+    assert engine.pending_end_ms() == 2501
+    expired = engine.advance(2101, 2101)
+    assert len(expired) == 1 and expired[0]["source_event_seq"] == 100
+    confirmed = engine.handle(fill("away", ".48", 2400, 102), 2400)
+    assert len(confirmed) == 1 and confirmed[0]["source_event_seq"] == 101
+    assert confirmed[0]["kind"] == "fire" and engine.pending_end_ms() == 0
+
+
+def test_cross_book_confirmation_is_scoped_to_same_match():
+    engine = primed()
+    other = deepcopy(MATCH)
+    other["slug"] = "another-match"
+    engine.handle(event("match", other), 1000)
+    engine.state["books"]["another-match:away"] = ["0.5"] * 5
+    engine.handle(fill("home", ".56", 1100, 100), 1100)
+    movement = fill("away", ".48", 1200, 101)
+    movement["payload"]["slug"] = other["slug"]
+    assert engine.handle(movement, 1200) == []
+    result = engine.advance(2101, 2101)
+    assert len(result) == 1 and result[0]["cross_book"] is False
 
 
 def test_no_token_normalization_and_identical_messages_are_not_deduped():
@@ -135,8 +232,8 @@ def test_score_from_after_fill_is_never_attached():
 
 def test_late_processing_logged_without_retrospective_fire():
     engine = primed()
-    engine.advance(2000, 2000)
-    rows = engine.handle(fill("home", ".56", 1100, 100), 2100)
+    engine.advance(2101, 2101)
+    rows = engine.handle(fill("home", ".56", 1100, 100), 2200)
     assert [r["kind"] for r in rows] == ["candidate", "candidate_result"]
     assert all(r["late"] and r["fire_recv_ms"] is None for r in rows)
 
@@ -496,7 +593,7 @@ def test_malformed_next_second_does_not_lose_pending_result(tmp_path):
     rows = engine_batch(store, engine, [fill("home", "bad", 2100, 101)], 2100)
     assert rows[0]["kind"] == "input_error"
     rows = engine_batch(store, engine, [], 2200)
-    assert rows[0]["kind"] == "candidate_result" and rows[0]["reason"] == "second_closed"
+    assert rows[0]["kind"] == "candidate_result" and rows[0]["reason"] == "confirmation_window_expired"
     store.close()
 
 
@@ -602,13 +699,13 @@ def test_timeout_evicts_engine_book_windows():
     assert engine.state["matches"] == {} and engine.state["books"] == {}
 
 
-def test_depth_only_traffic_closes_pending_second():
+def test_depth_only_traffic_expires_pending_window():
     engine = primed()
     engine.handle(fill("home", ".56", 1100, 100), 1100)
-    rows = engine.handle(event("market", {"recv_ms": 2000,
-                                          "message": {"event_type": "price_change", "price_changes": []}}, 101), 2001)
+    rows = engine.handle(event("market", {"recv_ms": 2101,
+                                          "message": {"event_type": "price_change", "price_changes": []}}, 101), 2102)
     assert len(rows) == 1 and rows[0]["kind"] == "candidate_result"
-    assert rows[0]["cross_book"] is False and rows[0]["emitted_ms"] == 2001
+    assert rows[0]["cross_book"] is False and rows[0]["emitted_ms"] == 2102
 
 
 def test_recording_failure_is_fatal_not_a_silent_drop(tmp_path, monkeypatch):

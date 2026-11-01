@@ -115,11 +115,22 @@ A `candidate` is appended when the price threshold is met. It carries a stable
 `candidate_id`, `candidate_recv_ms`, and the score/clock known at that receipt.
 `fire=null` and `cross_book=null` mean confirmation is pending.
 
-A linked `fire` is appended as soon as same-second confirmation is observed and
-gate/hypothesis pass. An earlier confirming fill in that second allows an
+Rule `soccer-impulse-v2-causal-2` uses an inclusive rolling window:
+`abs(other.recv_ms - candidate_recv_ms) <= 1,000`, for another book of the same
+match, with the existing movement threshold and implied direction.
+A linked `fire` is appended as soon as confirmation is observed and
+gate/hypothesis pass. An already-observed confirming fill up to 1,000 ms earlier allows an
 immediate fire. Failed gates/hypotheses still get a linked `candidate_result`.
 Unconfirmed candidates get `candidate_result` with `cross_book=false` at
-second-close. There is one terminal record per candidate.
+the first clock advance strictly after `candidate_recv_ms + 1,000`, with
+`reason=confirmation_window_expired`. There is one terminal record per candidate.
+Calendar-second boundaries have no effect. Historical runs and the in-sample
+reference used calendar-second equality; their signal populations differ.
+Deploy this version into a new run directory.
+
+Candidates and run manifests include `confirmation_window_ms=1000`; candidates
+also carry `confirmation_deadline_ms`. Confirmed rows preserve the other fill's
+receipt as `confirming_movement_recv_ms`, plus `confirming_event_seq`.
 
 `confirmation_recv_ms` is when the collector had both required fills.
 `fire_recv_ms` is when the engine actually knows the fire, never earlier than
@@ -130,14 +141,15 @@ offline computations. Score/clock
 columns stay frozen at the candidate, including when a later poll arrives before
 confirmation. Each confirming move uses that book's own prior-fill reference.
 
-Processing beyond the collector's second is flagged `late`; known confirmation
-can still produce a fire at the actual later time. If the second was already
-finalized, cross-book stays unknown with `reason=late_processing`. Completed
-seconds are not reopened and fires are never backdated.
+Processing delayed by at least 1,000 ms is flagged `late`; known confirmation
+can still produce a fire at the actual later time. If a candidate's window has
+already expired, cross-book stays unknown with `reason=late_processing`.
+Expired windows are not reopened and fires are never backdated.
 
-Second-close progresses on depth messages as well as fills, or on the idle
-clock between input deliveries. A quiet trade tape with continuous depth
-updates therefore does not hold terminal candidate records open.
+Deadlines progress on depth messages and fills, and on the live timer every
+20 ms under the recorder lock. A quiet trade tape therefore does not hold
+terminal candidate records open. Score and filter values remain frozen at the
+candidate receipt, even when confirmation comes later.
 
 Every `last_trade_price` message counts once, including identical messages or
 matching transaction hashes. No-token prices become `1-price`. The window starts
@@ -183,6 +195,7 @@ are UTC. Records are written once, directly into their JSONL destination.
 | `matches/{metadata,resolver,scores}/YYYY-MM-DD.jsonl` | Changed catalog/mapping/lifecycle records |
 | `pm_soccer/<slug>/YYYY-MM-DD.jsonl` | Market messages with collector receive time |
 | `book_windows/<slug>/YYYY-MM-DD.jsonl` | Window open/extension markers and derived opening book snapshots |
+| `top/<slug>/YYYY-MM-DD.jsonl` | Derived best bid/ask per token on every change, whole subscription window; `invalid` markers |
 | `score/{scores,resolver}/YYYY-MM-DD.jsonl` | Score observations, stale copies, raw event |
 | `polls/YYYY-MM-DD.jsonl` | Poll health, receipt time, errors, backoff |
 | `settlement/YYYY-MM-DD.jsonl` | Gamma market responses and resolution status |
@@ -221,8 +234,22 @@ Disconnects/reconnects invalidate cached books; deltas alone cannot initialize a
 complete ladder. Missing tokens remain unknown until a fresh wire snapshot arrives.
 Invalid depth also invalidates affected cached tokens and records a diagnostic.
 
+Top of book (storage `…-top-4`, SPEC §1 amendment 2026-11-01): for every subscribed
+token, inside and outside windows, `top/<slug>/` gets an `event=top` row whenever the
+in-memory ladder's best bid, best-bid size, best ask or best-ask size changes after a
+`book` or `price_change` message (one row per token per message, the state after all
+its changes). Columns: `slug`, `asset_id`, `book_role`, `outcome`, `recv_ms` of the
+causing message, `exchange_timestamp`, `best_bid`, `best_bid_size`, `best_ask`,
+`best_ask_size` (null on an empty side), `seed_recv_ms`, `source=local_book_state`, and
+on `price_change` rows the message entry's `wire_best_bid` / `wire_best_ask`. Rows exist
+only for complete ladders; a connection gap or invalid depth writes one `event=invalid`
+row per match naming the dropped tokens (`reason` `gap` / `invalid_depth`), and rows resume
+at the token's next `book` snapshot. A ladder dropped because its route ended writes nothing.
+
 At most one small `capture_clock` market row per local second replaces discarded
-depth traffic, preserving the engine's second-close ordering for replay. It is
+depth traffic, retaining sparse receipt-clock progress. Timer-produced terminal
+signal rows preserve actual expiry evaluation times; sparse clocks alone do not
+reproduce every live timer tick. Each clock is
 explicitly tagged `source=local_depth_clock` and is not a wire market observation.
 Minute-level websocket health and the final session summary include cumulative
 depth received/recorded/discarded counts, window counts and cached token count.
@@ -236,7 +263,7 @@ source sequence. Signals retain `source_event_seq` and `confirming_event_seq`.
 Engine rows are flushed to the OS immediately. Raw recording buffers are
 normally flushed by the live loop every 20 ms and by producer workers. Open
 file handles are bounded. SIGTERM/SIGINT stops workers, finalizes the pending
-second and flushes/fsyncs output files before closing. Unexpected crashes can
+confirmation windows and flushes/fsyncs output files before closing. Unexpected crashes can
 lose buffered rows, leave a partial final JSONL line or leave a candidate
 without a terminal result; power loss can also lose OS-buffered output. There
 is intentionally no recovery/replay or exactly-once guarantee across a crash.
@@ -247,6 +274,29 @@ recording. Daily summaries use small in-memory counters since session start.
 Copy completed session directories to the SSD using the existing backup
 workflow. No database backup or WAL handling is needed. Data is not automatically
 deleted. JSONL rotates daily; stdout goes to the supervisor journal.
+
+The manual SSD cleanup on 2026-10-19 preserved full recording history in the
+verified SSD backup chain while reducing the VPS working set. Some historical
+JSONL paths remain as empty regular files with the Linux extended attribute
+`user.pm_soccer_archived`, which identifies the original size, SHA256 and SSD
+archive. Closed score files were replaced atomically; eligible past-day output
+logs with cached append handles were cleared in place. Current-day logs,
+required latest score snapshots, match mappings and FotMob observation logs
+were retained. Observation logs must not be truncated during a live session:
+the capture reader would reset its score history.
+
+Older immutable FotMob payloads may exist only on SSD. Their historical
+observation references require the SSD archives for offline analysis. The
+cleanup retained payloads referenced in the last 24 hours, current/future-match
+payloads, references from unbacked logs, and the latest mapping seed for every
+match. This is a manual cleanup policy, not an automatic retention service.
+Future backups must skip empty archival markers (and fail if a marked file has
+been written again), carry forward SSD-only payload entries from the previous
+manifest, and preserve the prior archives/manifests. The updated manual helper
+is `data/soccer-backup-cleanup-20261018/backup_increment.py`; older helpers do
+not handle these markers. Restore the previous backup chain before overlaying
+the latest backup; an inventory of the remaining VPS files is not a complete
+historical dataset. Cleanup receipts are stored alongside the SSD backups.
 
 ## Deployment and tests
 
@@ -277,6 +327,77 @@ locally. Deployment remains blocked pending a working score
 connection. The Genie relay below supplies that connection; direct VPS
 Sofascore HTTP access remains blocked.
 The normal shared three-minute 403/429 backoff remains unchanged.
+
+### M1 Max local stack
+
+The 2026-10-20 local deployment uses `/Users/leon/services/pm-soccer` on
+`m1max`, with an isolated Python 3.12 environment in `.venv` and a separate
+application copy in `app`. Primary recordings use `recordings/primary` with
+run ID `soccer-m1max-20261020-rolling1s` after the rolling-window deployment at
+23:13 UTC. The initial rule's recordings were preserved under
+`recordings/primary-causal1-20261020T231213Z`; the fixed `recordings/primary`
+path now contains a fresh directory and manifest. FotMob recordings use `recordings/fotmob`.
+These directories are separate from the existing VPS run and SSD history.
+At 2026-10-21 11:13:28 UTC, recording cut over to M1 as the sole recorder.
+The VPS primary, FotMob receiver and resource timer are stopped and disabled;
+their recordings and unit configurations are preserved. The M1 stack remained
+running throughout. Its system-service migration and retirement of Genie's four
+root-managed source jobs require the prepared administrator commands below.
+
+`macos_services.py` prepares four continuously supervised jobs: primary,
+score-worker, fotmob-receiver, and fotmob-worker. All communication is local:
+SofaScore uses `127.0.0.1:18765`; FotMob uses `127.0.0.1:18766`. There are no
+SSH tunnels. Existing source, rule, filter and book-window behavior is retained.
+The fifth job, resources, runs `resource_sample_macos.py` every minute. It
+records each job's PID, launchd starts, CPU time and RSS, host memory/pressure
+and swap, free disk and allocated recording size. CPU time comes from `ps`
+with 10 ms precision; unsupported peak RSS/process-swap fields are null.
+It never controls services or removes data. Job logs are under `logs/`.
+
+Jobs initially run as Leon's LaunchAgents in `gui/501` for validation. To
+migrate these jobs to system LaunchDaemons that run as Leon without a desktop
+login, run on M1 Max:
+
+```sh
+sudo /bin/sh /Users/leon/services/pm-soccer/install-m1max.sh
+```
+
+Retire the old Genie source workers/tunnels by running **on Genie**:
+
+```sh
+sudo /bin/sh /Users/noel/services/pm-soccer-cutover-20261021/retire-genie.sh
+```
+
+That validated command disables and unloads only the two old soccer source
+workers and their two tunnels, with saved state and rollback on failure. It
+preserves their plists, application files and SSH keys. It has no effect on M1.
+Until these administrator commands are run, M1 remains scoped to Leon's desktop
+login and the old Genie jobs remain loaded. Audit receipts are in
+`data/soccer-m1max-cutover-20261021/`.
+
+The system installer validates the prepared plists, backs up and retires only
+these LaunchAgents, waits for their processes to exit, then installs the five
+root-owned system plists. A bootstrap failure restores the user jobs. The
+primary starts a fresh session; previous recordings remain intact. Labels are
+`com.leon.pm-soccer-<role>`; inspect with `launchctl print
+system/com.leon.pm-soccer-primary` after migration, or `launchctl print
+gui/501/com.leon.pm-soccer-primary` before migration. The installer does not
+stop VPS/Genie services or change FileVault/power settings. M1 Max should stay
+on AC with its lid open; battery idle sleep is currently one minute.
+
+For SSD backups from the machine with the mounted drive:
+
+```sh
+python utils/backup_soccer_macos.py --host m1max \
+  --dest '/Volumes/Extreme SSD/m1max_backup/pm_soccer_dryrun'
+```
+
+Each batch verifies fixed JSONL prefixes, file checksums, gzip payload hashes
+and payload references. It is a standalone snapshot of files currently on the
+Mac, not an atomic cross-file snapshot. Preserve earlier batches for archived
+history. Backup never removes source data; no recurring backup, cutoff or
+cleanup job is installed. The old VPS backup chain remains separate. Treat
+parallel VPS/M1 runs as separate sessions for offline comparison.
 
 ### Genie score worker
 
