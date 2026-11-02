@@ -17,3 +17,5 @@ ANALYSIS.md
 REVIEW.md
 IMPLEMENTATION.md
 docs/discord_signal_analysis.md
+pm_nfl_dryrun/rules*.json
+pm_nba_dryrun/rules*.json
